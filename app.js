@@ -8,7 +8,6 @@ const dbConnect = require('./DB/db')
 const routes = require('./router')
 var app = express();
 var cors = require('cors');
-const admin = require('./firebase/firebase')
 const swaggerDocs = require('./swagger/config');
 const bodyParser = require("body-parser");
 // view engine setup

@@ -1,7 +1,7 @@
 var User = require('../model/user')
 var bryctjs = require('bcryptjs')
 var jwt = require('jsonwebtoken')
-var admin = require('../firebase/firebase')
+
 exports.registerUser = async (req, res) => {
     try {
         const { username, password, phoneNumber, email, fullName } = req.body
@@ -78,6 +78,32 @@ exports.login = async (req, res) => {
     }
 }
 
-
-
-
+exports.getProfileUser = async (req, res) => {
+    try {
+        const user = await User.findById(req._id).select('-password -verifyToken -verifyTokenExpires');
+        if (!user) {
+            return res.status(404).json({
+                message: "Not found profile",
+                error: true,
+                success: false
+            })
+        }
+        res.status(200).json({ user });
+    } catch (error) {
+        res.status(500).json({
+            message: "Server Error",
+            error: error.message
+        })
+    }
+}
+exports.getAllProfileUsers = async (req, res) => {
+    try {
+        const users = await User.find().select('-password -verifyToken -verifyTokenExpires');
+        res.status(200).json({ users, count: users.length });
+    } catch (error) {
+        res.status(500).json({
+            message: "Server Error",
+            error: error.message
+        });
+    }
+};
