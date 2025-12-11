@@ -7,7 +7,7 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
-    "@prisma/client": "^7.1.0",
+    "@prisma/client": "^6.0.0",
     "@supabase/supabase-js": "^2.87.1",
     "bcryptjs": "^3.0.2",
     "body-parser": "^2.2.0",
@@ -20,13 +20,9 @@
     "http-errors": "~1.6.3",
     "jade": "~1.11.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.18.1",
     "morgan": "~1.9.1",
     "pg": "^8.16.3",
-    "pg-hstore": "^2.3.4",
-    "postgres": "^3.4.7",
-    "prisma": "^7.1.0",
-    "sequelize": "^6.37.7",
+    "prisma": "^6.0.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1"
   },

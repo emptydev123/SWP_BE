@@ -103,7 +103,7 @@ router.post('/login', user.login);
  *         description: Profile không tìm thấy
  */
 router.get('/getprofile', auth.authMiddleWare,
-    auth.requireRole('customer', 'staff', 'admin'),
+    auth.requireRole('member', 'customer', 'staff', 'admin'),
     user.getProfileUser
 );
 
