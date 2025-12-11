@@ -1,11 +1,11 @@
-var User = require('../model/user')
+const prisma = require('../prisma/client');
 var bryctjs = require('bcryptjs')
 var jwt = require('jsonwebtoken')
 
 exports.registerUser = async (req, res) => {
     try {
         const { username, password, phoneNumber, email, fullName } = req.body
-        const checkuserName = await User.findOne({ username });
+        const checkuserName = await prisma.user.findUnique({ where: { username } });
         if (checkuserName) {
             return res.status(400).json({ message: "Please Create New UserName" })
         }
@@ -19,15 +19,14 @@ exports.registerUser = async (req, res) => {
             email,
             fullName,
         }
-        const newUser = new User(payload);
-        const save = await newUser.save()
+        const newUser = await prisma.user.create({ data: payload });
         res.status(200).json({
             message: "User register successfully",
             error: false,
             success: true,
             data: {
+                id: newUser.id,
                 username: newUser.username,
-                password: newUser.password,
                 phonenumber: newUser.phoneNumber,
                 email: newUser.email,
                 fullname: newUser.fullName
@@ -47,7 +46,7 @@ exports.login = async (req, res) => {
     const secretKey = process.env.SECRET_KEY
     const { username, password } = req.body;
     try {
-        const user = await User.findOne({ username });
+        const user = await prisma.user.findUnique({ where: { username } });
         console.log('1', user)
         if (!user) {
             return res.status(400).json({
@@ -65,7 +64,7 @@ exports.login = async (req, res) => {
             })
         }
         const accessToken = jwt.sign({
-            userId: user._id,
+            userId: user.id,
             username: user.username
         }, secretKey, { expiresIn: '1h' })
         res.status(202).json({ status: true, accessToken })
@@ -80,7 +79,19 @@ exports.login = async (req, res) => {
 
 exports.getProfileUser = async (req, res) => {
     try {
-        const user = await User.findById(req._id).select('-password -verifyToken -verifyTokenExpires');
+        const user = await prisma.user.findUnique({
+            where: { id: req.userId },
+            select: {
+                id: true,
+                username: true,
+                fullName: true,
+                email: true,
+                phoneNumber: true,
+                role: true,
+                createdAt: true,
+                updatedAt: true,
+            }
+        });
         if (!user) {
             return res.status(404).json({
                 message: "Not found profile",
@@ -98,7 +109,18 @@ exports.getProfileUser = async (req, res) => {
 }
 exports.getAllProfileUsers = async (req, res) => {
     try {
-        const users = await User.find().select('-password -verifyToken -verifyTokenExpires');
+        const users = await prisma.user.findMany({
+            select: {
+                id: true,
+                username: true,
+                fullName: true,
+                email: true,
+                phoneNumber: true,
+                role: true,
+                createdAt: true,
+                updatedAt: true,
+            }
+        });
         res.status(200).json({ users, count: users.length });
     } catch (error) {
         res.status(500).json({

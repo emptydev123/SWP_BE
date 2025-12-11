@@ -4,7 +4,7 @@ var express = require('express');
 var path = require('path');
 var cookieParser = require('cookie-parser');
 var logger = require('morgan');
-const dbConnect = require('./DB/db')
+// const { connectDB } = require('./DB/db')
 const routes = require('./router')
 var app = express();
 var cors = require('cors');
@@ -23,7 +23,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(cors());
 
 // connect DB
-dbConnect()
+// connectDB()
 app.use('/api', routes)
 // swagger
 swaggerDocs(app)
