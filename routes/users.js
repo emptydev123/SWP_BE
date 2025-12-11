@@ -14,7 +14,7 @@ const auth = require('../middlewares/auth');
  * @swagger
  * /api/users/register:
  *   post:
- *     summary: Đăng ký tài khoản mới
+ *     summary: Đăng ký tài khoản mới (SCMS)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -23,30 +23,30 @@ const auth = require('../middlewares/auth');
  *           schema:
  *             type: object
  *             required:
- *               - username
- *               - password
  *               - email
+ *               - password
+ *               - fullName
  *             properties:
- *               username:
+ *               email:
  *                 type: string
- *                 example: customer1
+ *                 example: student@university.edu.vn
  *               password:
  *                 type: string
  *                 example: 123456
- *               phoneNumber:
- *                 type: string
- *                 example: 0907057587
- *               email:
- *                 type: string
- *                 example: huynhtrantam13@gmail.com
  *               fullName:
  *                 type: string
  *                 example: Huỳnh Trấn Tâm
+ *               studentCode:
+ *                 type: string
+ *                 example: SE171218
+ *               phone:
+ *                 type: string
+ *                 example: 0907057587
  *     responses:
  *       200:
  *         description: Đăng ký thành công
  *       400:
- *         description: Lỗi validate
+ *         description: Lỗi validate hoặc email tồn tại
  */
 router.post('/register', user.registerUser);
 
@@ -54,7 +54,7 @@ router.post('/register', user.registerUser);
  * @swagger
  * /api/users/login:
  *   post:
- *     summary: Đăng nhập để lấy JWT token
+ *     summary: Đăng nhập bằng Email (SCMS)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -63,20 +63,20 @@ router.post('/register', user.registerUser);
  *           schema:
  *             type: object
  *             required:
- *               - username
+ *               - email
  *               - password
  *             properties:
- *               username:
+ *               email:
  *                 type: string
- *                 example: customer1
+ *                 example: student@university.edu.vn
  *               password:
  *                 type: string
  *                 example: 123456
  *     responses:
  *       200:
- *         description: Đăng nhập thành công, trả về accessToken 
- *       401:
- *         description: Sai username hoặc password
+ *         description: Login thành công, trả về accessToken
+ *       400:
+ *         description: Sai email hoặc password
  */
 router.post('/login', user.login);
 
@@ -98,12 +98,12 @@ router.post('/login', user.login);
  *               properties:
  *                 user:
  *       401:
- *         description: Unauthorized / Token invalid
+ *         description: Unauthorized
  *       404:
- *         description: Profile không tìm thấy
+ *         description: User not found
  */
 router.get('/getprofile', auth.authMiddleWare,
-    auth.requireRole('member', 'customer', 'staff', 'admin'),
+    auth.requireRole('USER', 'ADMIN'), // System Roles
     user.getProfileUser
 );
 
@@ -111,30 +111,18 @@ router.get('/getprofile', auth.authMiddleWare,
  * @swagger
  * /api/users/getallprofile:
  *   get:
- *     summary: Lấy tất cả user (chỉ admin)
+ *     summary: Lấy tất cả user (Admin only)
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Lấy danh sách users thành công
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 users:
- *                   type: array
- *                 count:
- *                   type: integer
- *                   example: 10
- *       401:
- *         description: Unauthorized / Token invalid
+ *         description: Lấy danh sách thành công
  *       403:
- *         description: Forbidden (không phải admin)
+ *         description: Forbidden (Not Admin)
  */
 router.get('/getallprofile', auth.authMiddleWare,
-    auth.requireRole('admin',),
+    auth.requireRole('ADMIN'),
     user.getAllProfileUsers
 );
 module.exports = router;

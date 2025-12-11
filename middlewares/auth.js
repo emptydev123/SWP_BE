@@ -9,21 +9,23 @@ const authMiddleWare = async (req, res, next) => {
         if (!token) return res.status(401).json({ message: 'No token provided' });
 
         const decoded = jwt.verify(token, JWT_SECRET);
-        console.log(decoded);
+        // Find user by id from decoded token
         const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+
         if (!user) return res.status(401).json({ message: 'Account not found' });
+
         req.user = user;
-        req._id = user.id;
         req.userId = user.id;
         next();
     } catch (error) {
-        res.status(401).json({ meesage: "Invalid token" })
+        res.status(401).json({ message: "Invalid token" })
     }
 }
 
+// Check System Role (ADMIN / USER)
 const requireRole = (...roles) => {
     return (req, res, next) => {
-        if (!roles.includes(req.user.role)) {
+        if (!req.user || !roles.includes(req.user.role)) {
             return res.status(403).json({ message: 'Forbidden - No permission' });
         }
         next();

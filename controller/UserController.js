@@ -2,100 +2,140 @@ const prisma = require('../prisma/client');
 var bryctjs = require('bcryptjs')
 var jwt = require('jsonwebtoken')
 
+// REGISTER
 exports.registerUser = async (req, res) => {
     try {
-        const { username, password, phoneNumber, email, fullName } = req.body
-        const checkuserName = await prisma.user.findUnique({ where: { username } });
-        if (checkuserName) {
-            return res.status(400).json({ message: "Please Create New UserName" })
+        const { email, password, phone, fullName, studentCode } = req.body
+
+        // Check format email
+        if (!email) return res.status(400).json({ message: "Email is required" });
+
+        // Check duplicate email
+        const existingUser = await prisma.user.findUnique({ where: { email } });
+        if (existingUser) {
+            return res.status(400).json({ message: "Email already exists" })
         }
+
+        // Check duplicate studentCode if provided
+        if (studentCode) {
+            const existingStudent = await prisma.user.findUnique({ where: { studentCode } });
+            if (existingStudent) {
+                return res.status(400).json({ message: "Student Code already exists" })
+            }
+        }
+
         const salt = await bryctjs.genSalt(10)
         const hashPassword = await bryctjs.hash(password, salt)
 
-        const payload = {
-            username,
-            password: hashPassword,
-            phoneNumber,
-            email,
-            fullName,
-        }
-        const newUser = await prisma.user.create({ data: payload });
+        // Create new user (SCMS schema)
+        const newUser = await prisma.user.create({
+            data: {
+                email,
+                passwordHash: hashPassword, // Mapped to password_hash
+                fullName,   // Mapped to full_name
+                phone,
+                studentCode, // Mapped to student_code
+                isActive: true
+            }
+        });
+
         res.status(200).json({
             message: "User register successfully",
-            error: false,
             success: true,
             data: {
                 id: newUser.id,
-                username: newUser.username,
-                phonenumber: newUser.phoneNumber,
                 email: newUser.email,
-                fullname: newUser.fullName
+                fullName: newUser.fullName,
+                phone: newUser.phone,
+                studentCode: newUser.studentCode
             }
         });
     } catch (error) {
+        console.error(error);
         return res.status(500).json({
-            message: error.message || error,
-            error: true,
+            message: error.message || "Internal Server Error",
             success: false
-
         })
     }
 }
-exports.login = async (req, res) => {
 
+// LOGIN
+exports.login = async (req, res) => {
     const secretKey = process.env.SECRET_KEY
-    const { username, password } = req.body;
+    const { email, password } = req.body; // Login by EMAIL
+
     try {
-        const user = await prisma.user.findUnique({ where: { username } });
-        console.log('1', user)
+        const user = await prisma.user.findUnique({ where: { email } });
+
         if (!user) {
             return res.status(400).json({
                 message: "User not found",
-                error: false,
                 success: false
             })
         }
-        const checkPassword = await bryctjs.compare(password, user.password);
+
+        const checkPassword = await bryctjs.compare(password, user.passwordHash); // Check passwordHash
         if (!checkPassword) {
             return res.status(400).json({
-                message: "Password Incorect",
-                error: false,
+                message: "Password Incorrect",
                 success: false
             })
         }
+
         const accessToken = jwt.sign({
             userId: user.id,
-            username: user.username
+            email: user.email,
+            role: user.role // Add System Role to Token
         }, secretKey, { expiresIn: '1h' })
-        res.status(202).json({ status: true, accessToken })
+
+        res.status(200).json({
+            success: true,
+            accessToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                fullName: user.fullName,
+                role: user.role
+            }
+        })
     } catch (error) {
-        res.status(401).json({
-            message: error.message || error,
-            error: true,
+        console.error(error);
+        res.status(500).json({
+            message: error.message || "Internal Server Error",
             success: false
         })
     }
 }
 
+// GET PROFILE
 exports.getProfileUser = async (req, res) => {
     try {
         const user = await prisma.user.findUnique({
             where: { id: req.userId },
             select: {
                 id: true,
-                username: true,
-                fullName: true,
                 email: true,
-                phoneNumber: true,
-                role: true,
+                fullName: true,
+                phone: true,
+                studentCode: true,
+                role: true, // Show System Role
+                avatarUrl: true,
                 createdAt: true,
                 updatedAt: true,
+                // Include memberships to see roles in clubs
+                memberships: {
+                    select: {
+                        clubId: true,
+                        role: true,
+                        status: true
+                    }
+                }
             }
         });
+
         if (!user) {
             return res.status(404).json({
                 message: "Not found profile",
-                error: true,
                 success: false
             })
         }
@@ -107,18 +147,19 @@ exports.getProfileUser = async (req, res) => {
         })
     }
 }
+
+// GET ALL USERS (Admin only - placeholder logic since no global role)
 exports.getAllProfileUsers = async (req, res) => {
     try {
         const users = await prisma.user.findMany({
             select: {
                 id: true,
-                username: true,
-                fullName: true,
                 email: true,
-                phoneNumber: true,
-                role: true,
-                createdAt: true,
-                updatedAt: true,
+                fullName: true,
+                phone: true,
+                studentCode: true,
+                isActive: true,
+                createdAt: true
             }
         });
         res.status(200).json({ users, count: users.length });
