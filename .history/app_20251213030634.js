@@ -36,12 +36,7 @@ app.use(function (req, res, next) {
 app.use(function (err, req, res, next) {
   // Trả về JSON thay vì render HTML
   const status = err.status || 500;
-  let message = err.message || 'Internal Server Error';
-  
-  // Xử lý lỗi JSON parse
-  if (err.type === 'entity.parse.failed') {
-    message = 'JSON không hợp lệ. Vui lòng kiểm tra lại format JSON (có thể có dấu phẩy thừa hoặc cú pháp sai).';
-  }
+  const message = err.message || 'Internal Server Error';
   
   // Log error để debug
   console.error('Error:', err);
@@ -49,10 +44,7 @@ app.use(function (err, req, res, next) {
   res.status(status).json({
     success: false,
     message: message,
-    ...(req.app.get('env') === 'development' && { 
-      error: err.stack,
-      details: err.body ? `Request body: ${err.body}` : undefined
-    })
+    ...(req.app.get('env') === 'development' && { error: err.stack })
   });
 });
 // app.listen(PORT, () => {

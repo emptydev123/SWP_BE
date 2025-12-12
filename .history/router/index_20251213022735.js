@@ -7,6 +7,8 @@ const transactionRouter = require('../routes/transactions');
 
 router.use('/users', userRouter);
 router.use('/clubs', clubRouter);
-router.use('/transactions', transactionRouter);
+router.use('/transactions',
+    auth.authMiddleWare,
+    transactionRouter);
 
 module.exports = router
