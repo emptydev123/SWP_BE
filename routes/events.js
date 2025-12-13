@@ -235,5 +235,61 @@ router.delete('/:eventId',
     eventsController.deleteEvent
 );
 
+/**
+ * @swagger
+ * /api/events/{eventId}/register:
+ *   post:
+ *     summary: Register for event (FREE or PAID)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: eventId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Event ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               quantity:
+ *                 type: integer
+ *                 description: Number of tickets (1-10)
+ *                 example: 1
+ *                 default: 1
+ *               ticketType:
+ *                 type: string
+ *                 description: Ticket type (optional)
+ *                 example: STANDARD
+ *     responses:
+ *       200:
+ *         description: Registration successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   description: For FREE events, returns QR codes. For PAID events, returns payment link.
+ *       400:
+ *         description: Invalid request or event full
+ *       404:
+ *         description: Event not found
+ */
+router.post('/:eventId/register',
+    auth.authMiddleWare,
+    eventsController.registerEvent
+);
+
 module.exports = router;
 

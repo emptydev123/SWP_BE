@@ -134,6 +134,7 @@ model Event {
   isActive     Boolean       @default(true) @map("is_active")
   createdAt    DateTime      @default(now()) @map("created_at")
   updatedAt    DateTime      @updatedAt @map("updated_at")
+  format       EventFormat   @default(OFFLINE)
   checkins     Checkin[]
   club         Club          @relation(fields: [clubId], references: [id], onDelete: Cascade)
   createdBy    User?         @relation("EventCreator", fields: [createdById], references: [id])
@@ -263,6 +264,7 @@ model Feedback {
 enum SystemRole {
   ADMIN
   USER
+  MEMBER
 }
 
 enum MembershipRole {
@@ -333,4 +335,9 @@ enum FundRequestStatus {
 enum LedgerType {
   INCOME
   EXPENSE
+}
+
+enum EventFormat {
+  ONLINE
+  OFFLINE
 }
