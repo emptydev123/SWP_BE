@@ -5,9 +5,9 @@ const options = {
     definition: {
         openapi: "3.0.0",
         info: {
-            title: "Vehicle API",
+            title: "Club Management System API",
             version: "1.0.0",
-            description: "API docs cho project của bạn",
+            description: "",
         },
         servers: [
             {

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const clubController = require('../controller/ClubController');
 const auth = require('../middlewares/auth');
+const upload = require('../middlewares/upload');
 
 /**
  * @swagger
@@ -20,7 +21,10 @@ const auth = require('../middlewares/auth');
  *       200:
  *         description: Danh sách CLB
  */
-router.get('/', clubController.getAllClubs);
+router.get('/',
+    auth.authMiddleWare,
+    auth.requireRole("ADMIN", "USER"),
+    clubController.getAllClubs);
 
 /**
  * @swagger
@@ -41,49 +45,72 @@ router.get('/', clubController.getAllClubs);
  *       404:
  *         description: Không tìm thấy CLB
  */
-router.get('/:slug', clubController.getClubDetail);
+router.get('/:slug',
+    auth.authMiddleWare,
+    auth.requireRole('USER', "ADMIN"),
+    clubController.getClubDetail);
 
 /**
  * @swagger
  * /api/clubs:
  *   post:
- *     summary: Tạo CLB mới (Admin Only)
+ *     summary: Tạo CLB mới với import Excel (Admin Only)
  *     tags: [Clubs]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
- *         application/json:
+ *         multipart/form-data:
  *           schema:
  *             type: object
  *             required:
  *               - name
- *               - leaderEmail
+ *               - excelFile
  *             properties:
+ *               excelFile:
+ *                 type: string
+ *                 format: binary
+ *                 description: File Excel chứa danh sách members. Các cột bắt buộc - email, student_code, phone, email_verified, role, is_leader, full_name
  *               name:
  *                 type: string
+ *                 description: Tên club
  *                 example: FPT Software Engineering Club
  *               slug:
  *                 type: string
+ *                 description: Slug của club (tùy chọn)
  *                 example: fpt-se-club
  *               description:
  *                 type: string
- *               leaderEmail:
+ *                 description: Mô tả club
+ *                 example: Câu lạc bộ lập trình FPT
+ *               logoUrl:
  *                 type: string
- *                 description: Email của sinh viên sẽ làm Leader (User phải tồn tại trước)
- *                 example: student1@fpt.edu.vn
+ *                 description: URL logo club
+ *                 example: https://example.com/logo.png
  *     responses:
  *       201:
  *         description: Tạo CLB thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *       400:
+ *         description: Lỗi validate hoặc file Excel không hợp lệ
  *       403:
  *         description: Forbidden (Not Admin)
- *       404:
- *         description: Leader email not found
  */
 router.post('/',
     auth.authMiddleWare,
     auth.requireRole('ADMIN'),
+    upload.single('excelFile'),
     clubController.createClub
 );
 

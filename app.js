@@ -34,13 +34,16 @@ app.use(function (req, res, next) {
 
 // error handler
 app.use(function (err, req, res, next) {
-  // set locals, only providing error in development
-  res.locals.message = err.message;
-  res.locals.error = req.app.get('env') === 'development' ? err : {};
-
-  // render the error page
+  // Log error để debug
+  console.error('Error:', err);
+  
+  // Trả về JSON thay vì render view (phù hợp với API)
   res.status(err.status || 500);
-  res.render('error');
+  res.json({
+    success: false,
+    message: err.message || 'Internal Server Error',
+    error: req.app.get('env') === 'development' ? err.stack : {}
+  });
 });
 // app.listen(PORT, () => {
 //   console.log(` Server running on http://localhost:${PORT}`);
