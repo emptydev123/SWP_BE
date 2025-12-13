@@ -43,4 +43,46 @@ const requireRole = (...roles) => {
     };
 };
 
-module.exports = { authMiddleWare, requireRole };
+// Check if user is club leader (from clubId in body or params)
+const requireClubLeader = async (req, res, next) => {
+    try {
+        const userId = req.userId;
+        const clubId = req.body.clubId || req.params.clubId;
+
+        if (!clubId) {
+            return res.status(400).json({ message: 'Thiếu clubId' });
+        }
+
+        // Check if user is leader of this club
+        const membership = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                role: 'LEADER',
+                status: 'ACTIVE'
+            }
+        });
+
+        // Also check if user is the leader in Club.leaderUserId
+        const club = await prisma.club.findUnique({
+            where: { id: clubId }
+        });
+
+        if (!club) {
+            return res.status(404).json({ message: 'Không tìm thấy CLB' });
+        }
+
+        // User is leader if: membership role is LEADER OR club.leaderUserId matches
+        if (membership || club.leaderUserId === userId || req.user.role === 'ADMIN') {
+            req.clubId = clubId;
+            next();
+        } else {
+            return res.status(403).json({ message: 'Chỉ club leader mới có quyền thực hiện hành động này' });
+        }
+    } catch (error) {
+        console.error('Require Club Leader Error:', error);
+        res.status(500).json({ message: error.message || 'Lỗi khi kiểm tra quyền' });
+    }
+};
+
+module.exports = { authMiddleWare, requireRole, requireClubLeader };

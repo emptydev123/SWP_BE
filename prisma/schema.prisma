@@ -263,7 +263,6 @@ model Feedback {
 enum SystemRole {
   ADMIN
   USER
-  MEMBER
 }
 
 enum MembershipRole {

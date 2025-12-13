@@ -36,7 +36,7 @@ app.use(function (req, res, next) {
 app.use(function (err, req, res, next) {
   // Log error để debug
   console.error('Error:', err);
-  
+
   // Trả về JSON thay vì render view (phù hợp với API)
   res.status(err.status || 500);
   res.json({
