@@ -85,7 +85,7 @@ exports.login = async (req, res) => {
         const accessToken = jwt.sign({
             userId: user.id,
             email: user.email,
-            role: user.role // Add System Role to Token
+            role: user.auth_role // Use auth_role field from schema
         }, secretKey, { expiresIn: '1h' })
 
         res.status(200).json({
@@ -95,7 +95,7 @@ exports.login = async (req, res) => {
                 id: user.id,
                 email: user.email,
                 fullName: user.fullName,
-                role: user.role
+                role: user.auth_role // Use auth_role field from schema
             }
         })
     } catch (error) {
@@ -118,7 +118,7 @@ exports.getProfileUser = async (req, res) => {
                 fullName: true,
                 phone: true,
                 studentCode: true,
-                role: true, // Show System Role
+                auth_role: true, // Use auth_role field from schema
                 avatarUrl: true,
                 createdAt: true,
                 updatedAt: true,
