@@ -135,7 +135,10 @@ model Event {
   createdAt    DateTime      @default(now()) @map("created_at")
   updatedAt    DateTime      @updatedAt @map("updated_at")
   format       EventFormat   @default(OFFLINE)
+<<<<<<< HEAD
   online_link  String?
+=======
+>>>>>>> marco
   checkins     Checkin[]
   club         Club          @relation(fields: [clubId], references: [id], onDelete: Cascade)
   createdBy    User?         @relation("EventCreator", fields: [createdById], references: [id])

@@ -1,4 +1,6 @@
 const prisma = require('../prisma/client');
+const payosService = require('../services/payosService');
+const { generateQRCode } = require('../utils/ticketUtils');
 
 /**
  * Tạo Event mới (Club Leader Only)
@@ -520,6 +522,279 @@ exports.deleteEvent = async (req, res) => {
         res.status(500).json({
             success: false,
             message: error.message || 'Lỗi khi xóa event'
+        });
+    }
+};
+
+/**
+ * Đăng ký tham gia event (FREE hoặc PAID)
+ * - FREE: Tạo ticket ngay, generate QR code, trả về QR code
+ * - PAID: Tạo payment link, trả về payment link (webhook sẽ tạo ticket + QR code sau khi thanh toán thành công)
+ */
+exports.registerEvent = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { quantity = 1, ticketType } = req.body;
+        const userId = req.userId;
+
+        // 1. Validate quantity
+        if (quantity < 1 || quantity > 10) {
+            return res.status(400).json({
+                success: false,
+                message: 'Số lượng vé phải từ 1 đến 10'
+            });
+        }
+
+        // 2. Lấy thông tin event
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            include: {
+                club: true
+            }
+        });
+
+        if (!event) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy event'
+            });
+        }
+
+        // 3. Kiểm tra event còn active không
+        if (!event.isActive) {
+            return res.status(400).json({
+                success: false,
+                message: 'Event đã bị vô hiệu hóa'
+            });
+        }
+
+        // 4. Kiểm tra capacity nếu có
+        if (event.capacity) {
+            const soldTickets = await prisma.ticket.count({
+                where: {
+                    eventId: eventId,
+                    status: { in: ['PAID', 'RESERVED', 'USED', 'INIT'] }
+                }
+            });
+
+            if (soldTickets + quantity > event.capacity) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Event chỉ còn ${event.capacity - soldTickets} vé`
+                });
+            }
+        }
+
+        // 5. Kiểm tra user đã đăng ký chưa (tránh đăng ký trùng)
+        const existingTickets = await prisma.ticket.findMany({
+            where: {
+                eventId: eventId,
+                userId: userId,
+                status: { in: ['PAID', 'RESERVED', 'INIT'] }
+            }
+        });
+
+        if (existingTickets.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Bạn đã đăng ký event này rồi'
+            });
+        }
+
+        // 6. Xử lý theo pricingType
+        if (event.pricingType === 'FREE') {
+            // FREE: Tạo ticket ngay, generate QR code
+            const tickets = [];
+            
+            for (let i = 0; i < quantity; i++) {
+                const ticket = await prisma.ticket.create({
+                    data: {
+                        eventId: eventId,
+                        userId: userId,
+                        ticketType: ticketType || 'STANDARD',
+                        price: 0,
+                        status: 'PAID', // FREE event ticket = PAID ngay
+                        purchasedAt: new Date(),
+                        assignedAt: new Date()
+                    }
+                });
+
+                // Generate QR code
+                const qrCode = generateQRCode(eventId, ticket.id);
+                
+                // Update ticket với QR code
+                const updatedTicket = await prisma.ticket.update({
+                    where: { id: ticket.id },
+                    data: { qrCode: qrCode }
+                });
+
+                tickets.push(updatedTicket);
+            }
+
+            res.status(200).json({
+                success: true,
+                message: 'Đăng ký event thành công',
+                data: {
+                    eventId: eventId,
+                    eventTitle: event.title,
+                    tickets: tickets.map(t => ({
+                        id: t.id,
+                        qrCode: t.qrCode,
+                        ticketType: t.ticketType,
+                        status: t.status
+                    })),
+                    type: 'FREE'
+                }
+            });
+
+        } else if (event.pricingType === 'PAID') {
+            // PAID: Tạo payment link
+            if (!event.price || event.price <= 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Event này chưa có giá vé'
+                });
+            }
+
+            // Lấy thông tin user
+            const user = await prisma.user.findUnique({
+                where: { id: userId }
+            });
+
+            // Tính tổng tiền
+            const totalAmount = event.price * quantity;
+
+            // Tạo transaction trong DB
+            const transaction = await prisma.transaction.create({
+                data: {
+                    clubId: event.clubId,
+                    userId: userId,
+                    type: 'EVENT_TICKET',
+                    amount: totalAmount,
+                    currency: 'VND',
+                    paymentMethod: 'PAYOS',
+                    status: 'PENDING'
+                }
+            });
+
+            // Tạo tickets với status RESERVED (chưa có QR code, sẽ tạo sau khi thanh toán thành công)
+            const tickets = [];
+            for (let i = 0; i < quantity; i++) {
+                const ticket = await prisma.ticket.create({
+                    data: {
+                        eventId: eventId,
+                        userId: userId,
+                        ticketType: ticketType || 'STANDARD',
+                        price: event.price,
+                        transactionId: transaction.id,
+                        status: 'RESERVED'
+                    }
+                });
+                tickets.push(ticket);
+            }
+
+            // Cập nhật transaction với referenceTicketId
+            await prisma.transaction.update({
+                where: { id: transaction.id },
+                data: {
+                    referenceTicketId: tickets[0].id
+                }
+            });
+
+            // Tạo orderCode
+            const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+
+            // Tạo payment link từ PayOS
+            // Lưu ý: Description sẽ tự động được truncate xuống 25 ký tự trong payosService
+            let paymentResult;
+            try {
+                paymentResult = await payosService.createPaymentLink({
+                    orderCode: orderCode,
+                    amount: totalAmount,
+                    description: `Mua vé: ${event.title}${quantity > 1 ? ` (${quantity})` : ''}`,
+                    buyerName: user.fullName || user.email,
+                    buyerEmail: user.email,
+                    buyerPhone: user.phone || '',
+                    items: [
+                        {
+                            name: `Vé ${event.title}${ticketType ? ` - ${ticketType}` : ''}`,
+                            quantity: quantity,
+                            price: event.price
+                        }
+                    ]
+                });
+            } catch (payosError) {
+                // Nếu PayOS API fail, update transaction và tickets status
+                console.error('PayOS API Error:', payosError);
+                
+                // Update transaction status thành FAILED
+                await prisma.transaction.update({
+                    where: { id: transaction.id },
+                    data: {
+                        status: 'FAILED',
+                        payosPayload: JSON.stringify({
+                            error: payosError.message,
+                            orderCode: orderCode
+                        })
+                    }
+                });
+
+                // Update tickets status thành CANCELLED
+                await prisma.ticket.updateMany({
+                    where: {
+                        transactionId: transaction.id,
+                        status: 'RESERVED'
+                    },
+                    data: {
+                        status: 'CANCELLED'
+                    }
+                });
+
+                // Throw error để catch block xử lý
+                throw new Error(`Không thể tạo payment link từ PayOS: ${payosError.message}`);
+            }
+
+            // Cập nhật transaction với PayOS data
+            await prisma.transaction.update({
+                where: { id: transaction.id },
+                data: {
+                    paymentReference: orderCode.toString(),
+                    payosPayload: JSON.stringify({
+                        orderCode: orderCode,
+                        checkoutUrl: paymentResult.paymentLink,
+                        ticketIds: tickets.map(t => t.id),
+                        ...paymentResult.data
+                    })
+                }
+            });
+
+            res.status(200).json({
+                success: true,
+                message: 'Vui lòng thanh toán để hoàn tất đăng ký',
+                data: {
+                    eventId: eventId,
+                    eventTitle: event.title,
+                    transactionId: transaction.id,
+                    paymentLink: paymentResult.paymentLink,
+                    orderCode: orderCode,
+                    amount: totalAmount,
+                    quantity: quantity,
+                    type: 'PAID',
+                    note: 'Sau khi thanh toán thành công, bạn sẽ nhận được mã QR code ngay trong response hoặc có thể query lại transaction để lấy QR code'
+                }
+            });
+        } else {
+            return res.status(400).json({
+                success: false,
+                message: 'Loại pricing không hợp lệ'
+            });
+        }
+
+    } catch (error) {
+        console.error('Register Event Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi đăng ký event'
         });
     }
 };

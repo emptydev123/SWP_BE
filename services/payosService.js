@@ -1,14 +1,22 @@
-const axios = require('axios');
-const crypto = require('crypto');
+const { PayOS } = require('@payos/node');
 
 /**
  * PayOS Service - Xử lý tích hợp PayOS API
- * 
- * PayOS API Documentation:
- * - Create Payment: POST https://api.payos.vn/v2/payment-requests
- * - Get Payment Info: GET https://api.payos.vn/v2/payment-requests/{id}
- * - Cancel Payment: POST https://api.payos.vn/v2/payment-requests/{id}/cancel
+ * Sử dụng package @payos/node để tự động xử lý kết nối và URL
  */
+
+/**
+ * Utility: Truncate description xuống tối đa 25 ký tự (PayOS requirement)
+ * @param {string} description - Description gốc
+ * @returns {string} Description đã được truncate
+ */
+function truncateDescription(description) {
+    const maxLength = 25;
+    if (!description || description.length <= maxLength) {
+        return description || '';
+    }
+    return description.substring(0, maxLength);
+}
 
 class PayOSService {
     constructor() {
@@ -16,7 +24,7 @@ class PayOSService {
         this.clientId = process.env.PAYOS_CLIENT_ID;
         this.apiKey = process.env.PAYOS_API_KEY;
         this.checksumKey = process.env.PAYOS_CHECKSUM_KEY;
-        this.baseUrl = process.env.PAYOS_BASE_URL || 'https://api.payos.vn/v2';
+        
         // Default port 5001 (có thể override bằng PAYOS_RETURN_URL và PAYOS_CANCEL_URL trong .env)
         const defaultPort = process.env.PORT || 5001;
         this.returnUrl = process.env.PAYOS_RETURN_URL || `http://localhost:${defaultPort}/api/transactions/return`;
@@ -25,6 +33,14 @@ class PayOSService {
         // Validate config
         if (!this.clientId || !this.apiKey || !this.checksumKey) {
             console.warn('PayOS credentials chưa được cấu hình đầy đủ trong .env');
+            this.payOS = null;
+        } else {
+            // Khởi tạo PayOS instance (giống project cũ)
+            this.payOS = new PayOS(
+                this.clientId,
+                this.apiKey,
+                this.checksumKey
+            );
         }
     }
 
@@ -49,14 +65,22 @@ class PayOSService {
                 throw new Error('Thiếu thông tin bắt buộc: orderCode, amount, description');
             }
 
+            // Validate PayOS credentials
+            if (!this.payOS) {
+                throw new Error('PayOS credentials chưa được cấu hình. Vui lòng kiểm tra PAYOS_CLIENT_ID, PAYOS_API_KEY và PAYOS_CHECKSUM_KEY trong .env');
+            }
+
+            // Truncate description xuống tối đa 25 ký tự (PayOS requirement)
+            const truncatedDescription = truncateDescription(description);
+
             // Tạo request body theo PayOS API format
             const requestBody = {
                 orderCode: orderCode, // Số nguyên dương, unique
                 amount: amount, // Số tiền (VND)
-                description: description, // Mô tả đơn hàng
+                description: truncatedDescription, // Mô tả đơn hàng (tối đa 25 ký tự)
                 items: items || [
                     {
-                        name: description,
+                        name: truncatedDescription,
                         quantity: 1,
                         price: amount
                     }
@@ -69,28 +93,38 @@ class PayOSService {
                 expiredAt: Math.floor(Date.now() / 1000) + 3600 // Expire sau 1 giờ
             };
 
-            // Gọi PayOS API
-            const response = await axios.post(
-                `${this.baseUrl}/payment-requests`,
-                requestBody,
-                {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-client-id': this.clientId,
-                        'x-api-key': this.apiKey
-                    }
-                }
-            );
+            // Log request info để debug
+            console.log('PayOS API Request:', {
+                orderCode: orderCode,
+                amount: amount,
+                description: description,
+                hasCredentials: !!(this.clientId && this.apiKey && this.checksumKey)
+            });
+
+            // Gọi PayOS API sử dụng package @payos/node (tự động xử lý URL và kết nối)
+            const response = await this.payOS.paymentRequests.create(requestBody);
 
             return {
                 success: true,
-                data: response.data.data, // Chứa checkoutUrl, qrCode, etc.
-                paymentLink: response.data.data.checkoutUrl
+                data: response, // Response từ PayOS package
+                paymentLink: response.checkoutUrl
             };
 
         } catch (error) {
-            console.error('PayOS Create Payment Error:', error.response?.data || error.message);
-            throw new Error(`PayOS API Error: ${error.response?.data?.message || error.message}`);
+            // Log chi tiết lỗi để debug
+            console.error('PayOS Create Payment Error:', {
+                message: error.message,
+                code: error.code,
+                response: error.response?.data || error.response,
+                hasCredentials: !!(this.clientId && this.apiKey && this.checksumKey)
+            });
+
+            // Xử lý các loại lỗi khác nhau
+            if (error.message) {
+                throw new Error(`PayOS API Error: ${error.message}`);
+            } else {
+                throw new Error(`PayOS API Error: ${JSON.stringify(error)}`);
+            }
         }
     }
 
@@ -101,24 +135,20 @@ class PayOSService {
      */
     async getPaymentInfo(orderCode) {
         try {
-            const response = await axios.get(
-                `${this.baseUrl}/payment-requests/${orderCode}`,
-                {
-                    headers: {
-                        'x-client-id': this.clientId,
-                        'x-api-key': this.apiKey
-                    }
-                }
-            );
+            if (!this.payOS) {
+                throw new Error('PayOS credentials chưa được cấu hình');
+            }
+
+            const response = await this.payOS.paymentRequests.get(orderCode);
 
             return {
                 success: true,
-                data: response.data.data
+                data: response
             };
 
         } catch (error) {
-            console.error('PayOS Get Payment Info Error:', error.response?.data || error.message);
-            throw new Error(`PayOS API Error: ${error.response?.data?.message || error.message}`);
+            console.error('PayOS Get Payment Info Error:', error.message || error);
+            throw new Error(`PayOS API Error: ${error.message || JSON.stringify(error)}`);
         }
     }
 
@@ -129,44 +159,50 @@ class PayOSService {
      */
     async cancelPayment(orderCode) {
         try {
-            const response = await axios.post(
-                `${this.baseUrl}/payment-requests/${orderCode}/cancel`,
-                {},
-                {
-                    headers: {
-                        'x-client-id': this.clientId,
-                        'x-api-key': this.apiKey
-                    }
-                }
-            );
+            if (!this.payOS) {
+                throw new Error('PayOS credentials chưa được cấu hình');
+            }
+
+            const response = await this.payOS.paymentRequests.cancel(orderCode);
 
             return {
                 success: true,
-                data: response.data.data
+                data: response
             };
 
         } catch (error) {
-            console.error('PayOS Cancel Payment Error:', error.response?.data || error.message);
-            throw new Error(`PayOS API Error: ${error.response?.data?.message || error.message}`);
+            console.error('PayOS Cancel Payment Error:', error.message || error);
+            throw new Error(`PayOS API Error: ${error.message || JSON.stringify(error)}`);
         }
     }
 
     /**
      * Verify webhook signature từ PayOS
      * @param {Object} webhookData - Dữ liệu webhook
-     * @param {string} signature - Signature từ header
+     * @param {string} signature - Signature từ header (optional, nếu dùng package thì không cần)
      * @returns {boolean} True nếu signature hợp lệ
      */
     verifyWebhookSignature(webhookData, signature) {
         try {
-            // Tạo checksum từ webhook data
-            const dataString = JSON.stringify(webhookData);
-            const hmac = crypto.createHmac('sha256', this.checksumKey);
-            hmac.update(dataString);
-            const calculatedSignature = hmac.digest('hex');
+            if (!this.payOS) {
+                console.error('PayOS not initialized');
+                return false;
+            }
 
-            // So sánh signature
-            return calculatedSignature === signature;
+            // Sử dụng method verifyPaymentWebhookData từ package PayOS
+            try {
+                const verified = this.payOS.verifyPaymentWebhookData(webhookData);
+                return !!verified; // Nếu verify thành công, trả về true
+            } catch (verifyError) {
+                // Nếu package verify fail, fallback về manual verify
+                console.log('PayOS package verification failed, using manual verify:', verifyError.message);
+                const crypto = require('crypto');
+                const dataString = JSON.stringify(webhookData);
+                const hmac = crypto.createHmac('sha256', this.checksumKey);
+                hmac.update(dataString);
+                const calculatedSignature = hmac.digest('hex');
+                return calculatedSignature === signature;
+            }
         } catch (error) {
             console.error('Verify Webhook Signature Error:', error);
             return false;
