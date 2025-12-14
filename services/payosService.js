@@ -24,12 +24,12 @@ class PayOSService {
         this.clientId = process.env.PAYOS_CLIENT_ID;
         this.apiKey = process.env.PAYOS_API_KEY;
         this.checksumKey = process.env.PAYOS_CHECKSUM_KEY;
-        
+
         // Default port 5001 (có thể override bằng PAYOS_RETURN_URL và PAYOS_CANCEL_URL trong .env)
         const defaultPort = process.env.PORT || 5001;
         this.returnUrl = process.env.PAYOS_RETURN_URL || `http://localhost:${defaultPort}/api/transactions/return`;
         this.cancelUrl = process.env.PAYOS_CANCEL_URL || `http://localhost:${defaultPort}/api/transactions/cancel`;
-        
+
         // Validate config
         if (!this.clientId || !this.apiKey || !this.checksumKey) {
             console.warn('PayOS credentials chưa được cấu hình đầy đủ trong .env');
@@ -54,11 +54,12 @@ class PayOSService {
      * @param {string} paymentData.buyerEmail - Email người mua
      * @param {string} paymentData.buyerPhone - SĐT người mua
      * @param {Object} paymentData.items - Danh sách items
+     * @param {number} paymentData.expireMinutes - Số phút hết hạn (mặc định 60 phút)
      * @returns {Promise<Object>} Payment link response từ PayOS
      */
     async createPaymentLink(paymentData) {
         try {
-            const { orderCode, amount, description, buyerName, buyerEmail, buyerPhone, items } = paymentData;
+            const { orderCode, amount, description, buyerName, buyerEmail, buyerPhone, items, expireMinutes = 60 } = paymentData;
 
             // Validate required fields
             if (!orderCode || !amount || !description) {
@@ -72,6 +73,9 @@ class PayOSService {
 
             // Truncate description xuống tối đa 25 ký tự (PayOS requirement)
             const truncatedDescription = truncateDescription(description);
+
+            // Tính expiredAt: expireMinutes phút từ bây giờ
+            const expiredAt = Math.floor(Date.now() / 1000) + (expireMinutes * 60);
 
             // Tạo request body theo PayOS API format
             const requestBody = {
@@ -90,7 +94,7 @@ class PayOSService {
                 buyerName: buyerName || 'Khách hàng',
                 buyerEmail: buyerEmail || '',
                 buyerPhone: buyerPhone || '',
-                expiredAt: Math.floor(Date.now() / 1000) + 3600 // Expire sau 1 giờ
+                expiredAt: expiredAt // Expire sau expireMinutes phút
             };
 
             // Log request info để debug

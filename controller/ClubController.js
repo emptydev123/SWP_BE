@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const emailService = require('../services/emailService');
+const { paginateWithWhere } = require('../utils/paginationUtils');
 
 /**
  * Parse file Excel để lấy danh sách members
@@ -558,31 +559,53 @@ exports.createClub = async (req, res) => {
  * Lấy danh sách tất cả Clubs (Public)
  * - Có thể filter, search sau này
  */
+/**
+ * Lấy danh sách tất cả CLB (Public) - Có phân trang
+ */
 exports.getAllClubs = async (req, res) => {
     try {
-        const clubs = await prisma.club.findMany({
-            where: { isActive: true },
-            select: {
-                id: true,
-                name: true,
-                slug: true,
-                logoUrl: true,
-                description: true,
-                createdAt: true,
-                leader: {
-                    select: { fullName: true, email: true }
+        const { search, isActive } = req.query;
+
+        // Build where clause
+        const where = {
+            ...(isActive !== undefined ? { isActive: isActive === 'true' } : { isActive: true }),
+            ...(search && {
+                OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { description: { contains: search, mode: 'insensitive' } }
+                ]
+            })
+        };
+
+        // Sử dụng pagination utility
+        const result = await paginateWithWhere(
+            prisma.club,
+            where,
+            req.query,
+            {
+                select: {
+                    id: true,
+                    name: true,
+                    slug: true,
+                    logoUrl: true,
+                    description: true,
+                    createdAt: true,
+                    leader: {
+                        select: { fullName: true, email: true }
+                    },
+                    _count: {
+                        select: { memberships: true } // Đếm số thành viên
+                    }
                 },
-                _count: {
-                    select: { memberships: true } // Đếm số thành viên
-                }
-            },
-            orderBy: { createdAt: 'desc' }
-        });
+                orderBy: { createdAt: 'desc' },
+                defaultLimit: 10,
+                maxLimit: 50
+            }
+        );
 
         res.status(200).json({
             success: true,
-            count: clubs.length,
-            data: clubs
+            ...result
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

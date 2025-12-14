@@ -15,11 +15,77 @@ const upload = require('../middlewares/upload');
  * @swagger
  * /api/clubs:
  *   get:
- *     summary: Lấy danh sách tất cả CLB (Public)
+ *     summary: Lấy danh sách tất cả CLB (Public) - Có phân trang
  *     tags: [Clubs]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *           example: 1
+ *         description: Số trang (bắt đầu từ 1)
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 50
+ *           default: 10
+ *           example: 10
+ *         description: Số items mỗi trang (tối đa 50)
+ *       - in: query
+ *         name: search
+ *         required: false
+ *         schema:
+ *           type: string
+ *           example: "FPT"
+ *         description: Tìm kiếm theo tên hoặc mô tả
+ *       - in: query
+ *         name: isActive
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           example: true
+ *         description: Lọc theo trạng thái active
  *     responses:
  *       200:
- *         description: Danh sách CLB
+ *         description: Danh sách CLB với pagination
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     currentPage:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     total:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
+ *                     hasNext:
+ *                       type: boolean
+ *                     hasPrev:
+ *                       type: boolean
+ *                     nextPage:
+ *                       type: integer
+ *                       nullable: true
+ *                     prevPage:
+ *                       type: integer
+ *                       nullable: true
  */
 router.get('/',
     auth.authMiddleWare,
@@ -146,6 +212,84 @@ const applicationController = require('../controller/ClubApplicationController')
  *       400:
  *         description: Đã có đơn xin tham gia hoặc đã là thành viên
  */
+/**
+ * @swagger
+ * /api/clubs/applications/my:
+ *   get:
+ *     summary: Lấy danh sách đơn gia nhập mà user có quyền xem (Leader chỉ thấy đơn của club mình) - Có phân trang
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [PENDING, APPROVED, REJECTED]
+ *           example: "PENDING"
+ *         description: Lọc theo trạng thái
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *           example: 1
+ *         description: Số trang (bắt đầu từ 1)
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 10
+ *           example: 10
+ *         description: Số items mỗi trang (tối đa 100)
+ *     responses:
+ *       200:
+ *         description: Danh sách applications mà user có quyền xem với pagination
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     currentPage:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     total:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
+ *                     hasNext:
+ *                       type: boolean
+ *                     hasPrev:
+ *                       type: boolean
+ *                     nextPage:
+ *                       type: integer
+ *                       nullable: true
+ *                     prevPage:
+ *                       type: integer
+ *                       nullable: true
+ */
+router.get('/applications/my',
+    auth.authMiddleWare,
+    auth.requireRole('USER', 'ADMIN'),
+    applicationController.getMyApplications
+);
+
 router.post('/:clubId/apply',
     auth.authMiddleWare,
     auth.requireRole('USER', 'ADMIN'),
@@ -156,7 +300,7 @@ router.post('/:clubId/apply',
  * @swagger
  * /api/clubs/{clubId}/applications:
  *   get:
- *     summary: Lấy danh sách đơn xin tham gia (Leader only)
+ *     summary: Lấy danh sách đơn xin tham gia (Leader only) - Có phân trang
  *     tags: [Clubs]
  *     security:
  *       - bearerAuth: []
@@ -166,12 +310,66 @@ router.post('/:clubId/apply',
  *         required: true
  *       - in: query
  *         name: status
+ *         required: false
  *         schema:
  *           type: string
  *           enum: [PENDING, APPROVED, REJECTED]
+ *           example: "PENDING"
+ *         description: Lọc theo trạng thái
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *           example: 1
+ *         description: Số trang (bắt đầu từ 1)
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 10
+ *           example: 10
+ *         description: Số items mỗi trang (tối đa 100)
  *     responses:
  *       200:
- *         description: Danh sách applications
+ *         description: Danh sách applications với pagination
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     currentPage:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     total:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
+ *                     hasNext:
+ *                       type: boolean
+ *                     hasPrev:
+ *                       type: boolean
+ *                     nextPage:
+ *                       type: integer
+ *                       nullable: true
+ *                     prevPage:
+ *                       type: integer
+ *                       nullable: true
  */
 router.get('/:clubId/applications',
     auth.authMiddleWare,
