@@ -18,9 +18,9 @@ PAYOS_API_KEY="your-payos-api-key"
 PAYOS_CHECKSUM_KEY="your-payos-checksum-key"
 
 # PayOS URLs (Optional - có thể để mặc định)
-# LƯU Ý: PAYOS_BASE_URL không cần thiết nữa vì hệ thống sử dụng package @payos/node tự động xử lý URL
-PAYOS_RETURN_URL="http://localhost:5001/api/transactions/return"
-PAYOS_CANCEL_URL="http://localhost:5001/api/transactions/cancel"
+PAYOS_BASE_URL="https://api.payos.vn/v2"
+PAYOS_RETURN_URL="http://localhost:3000/api/transactions/return"
+PAYOS_CANCEL_URL="http://localhost:3000/api/transactions/cancel"
 ```
 
 ## Cách lấy thông tin từ PayOS

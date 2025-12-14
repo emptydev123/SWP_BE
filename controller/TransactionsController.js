@@ -2,6 +2,7 @@ const prisma = require('../prisma/client');
 const payosService = require('../services/payosService');
 const { generateQRCode } = require('../utils/ticketUtils');
 const QRCode = require('qrcode');
+const { formatTransactionWithPayment, getPaymentInfo } = require('../utils/paymentUtils');
 
 /**
  * Create payment link for MEMBERSHIP or EVENT_TICKET
@@ -434,7 +435,17 @@ exports.handleWebhook = async (req, res) => {
         const transaction = await prisma.transaction.findUnique({
             where: { paymentReference: orderCode.toString() },
             include: {
-                referenceMembership: true,
+                referenceMembership: {
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                email: true,
+                                fullName: true
+                            }
+                        }
+                    }
+                },
                 referenceTicket: {
                     include: {
                         event: true
@@ -536,29 +547,34 @@ exports.handleWebhook = async (req, res) => {
 
                 // Update từng ticket
                 for (const ticket of tickets) {
-                    const updateData = {
-                        status: 'PAID',
-                        purchasedAt: new Date(),
-                        assignedAt: new Date()
-                    };
-
-                    // Chỉ generate QR code nếu event format là OFFLINE
-                    if (ticket.event && ticket.event.format === 'OFFLINE') {
-                        if (!ticket.qrCode) {
-                            const qrCode = generateQRCode(ticket.eventId, ticket.id);
-                            updateData.qrCode = qrCode;
-                            console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode}`);
-                        } else {
-                            console.log(`[Webhook] Ticket ${ticket.id} already has QR code`);
-                        }
+                    if (ticket.status !== 'PAID' || !ticket.qrCode) {
+                        // Generate QR code nếu chưa có
+                        const qrCode = generateQRCode(ticket.eventId, ticket.id);
+                        
+                        await prisma.ticket.update({
+                            where: { id: ticket.id },
+                            data: {
+                                status: 'PAID',
+                                purchasedAt: new Date(),
+                                assignedAt: new Date(),
+                                qrCode: qrCode
+                            }
+                        });
+                        
+                        console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode}`);
                     } else {
-                        console.log(`[Webhook] Event ${ticket.eventId} is ONLINE, skipping QR code generation`);
+                        // Ticket đã có QR code, chỉ update status nếu cần
+                        if (ticket.status !== 'PAID') {
+                            await prisma.ticket.update({
+                                where: { id: ticket.id },
+                                data: {
+                                    status: 'PAID',
+                                    purchasedAt: new Date()
+                                }
+                            });
+                            console.log(`[Webhook] Updated ticket ${ticket.id} status to PAID`);
+                        }
                     }
-
-                    await prisma.ticket.update({
-                        where: { id: ticket.id },
-                        data: updateData
-                    });
                 }
 
                 // Tạo ledger entry cho club
@@ -681,7 +697,7 @@ exports.handleReturn = async (req, res) => {
             // Nếu PayOS báo đã PAID nhưng DB chưa cập nhật, cập nhật ngay
             if (payosStatus === 'PAID' && transaction.status !== 'SUCCESS') {
                 console.log(`Updating transaction ${transaction.id} to SUCCESS from return URL`);
-                
+
                 // Cập nhật transaction
                 transaction = await prisma.transaction.update({
                     where: { id: transaction.id },
@@ -942,20 +958,20 @@ exports.getTransaction = async (req, res) => {
         }
 
         // Kiểm tra quyền: chỉ user sở hữu transaction mới xem được
-        if (transaction.userId !== userId && req.user.role !== 'ADMIN') {
+        if (transaction.userId !== userId && req.user.auth_role !== 'ADMIN') {
             return res.status(403).json({
                 success: false,
                 message: 'Không có quyền xem transaction này'
             });
         }
 
-        // Parse payosPayload nếu có
+        // Parse payosPayload để lấy payosData
         let payosData = null;
         if (transaction.payosPayload) {
             try {
                 payosData = JSON.parse(transaction.payosPayload);
-            } catch (e) {
-                console.error('Parse payosPayload error:', e);
+            } catch (error) {
+                console.error('Error parsing payosPayload:', error);
             }
         }
 
@@ -1019,23 +1035,13 @@ exports.getTransaction = async (req, res) => {
             }
         }
 
-        // Format response
-        const responseData = {
-            id: transaction.id,
-            type: transaction.type,
-            amount: transaction.amount,
-            currency: transaction.currency,
-            status: transaction.status,
-            paymentMethod: transaction.paymentMethod,
-            paymentReference: transaction.paymentReference,
-            createdAt: transaction.createdAt,
-            confirmedAt: transaction.confirmedAt,
-            qrCode: transaction.qr_code,
-            timeOut: transaction.time_out,
-            club: transaction.club,
-            user: transaction.user,
-            payosData: payosData
-        };
+        // Format response với payment info từ payosPayload
+        const responseData = await formatTransactionWithPayment(transaction, true); // includeQRCode = true
+        
+        // Thêm các thông tin khác
+        responseData.club = transaction.club;
+        responseData.user = transaction.user;
+        responseData.payosData = payosData;
 
         // Thêm tickets nếu là EVENT_TICKET
         if (transaction.type === 'EVENT_TICKET') {
@@ -1068,6 +1074,17 @@ exports.getTransaction = async (req, res) => {
             responseData.membership = transaction.referenceMembership;
         }
 
+        // Đảm bảo có payment info (paymentLink, qrCode, orderCode) nếu transaction còn PENDING
+        if (transaction.status === 'PENDING' && !responseData.paymentLink) {
+            // Nếu chưa có paymentLink, thử lấy từ payosPayload
+            const paymentInfo = await getPaymentInfo(transaction);
+            if (paymentInfo.paymentLink) {
+                responseData.paymentLink = paymentInfo.paymentLink;
+                responseData.qrCode = paymentInfo.qrCode;
+                responseData.orderCode = paymentInfo.orderCode;
+            }
+        }
+
         res.status(200).json({
             success: true,
             data: responseData
@@ -1078,6 +1095,221 @@ exports.getTransaction = async (req, res) => {
         res.status(500).json({
             success: false,
             message: error.message || 'Lỗi khi lấy thông tin transaction'
+        });
+    }
+};
+
+/**
+ * Lấy payment info (payment link, QR code, orderCode) từ transaction
+ * Dùng khi cần lấy lại payment link hoặc QR code
+ */
+exports.getPaymentInfo = async (req, res) => {
+    try {
+        const { transactionId } = req.params;
+        const userId = req.userId;
+
+        const transaction = await prisma.transaction.findUnique({
+            where: { id: transactionId },
+            select: {
+                id: true,
+                userId: true,
+                type: true,
+                amount: true,
+                status: true,
+                paymentMethod: true,
+                paymentReference: true,
+                payosPayload: true
+            }
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy transaction'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ user sở hữu transaction mới xem được
+        if (transaction.userId !== userId && req.user.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Không có quyền xem transaction này'
+            });
+        }
+
+        // Chỉ trả về payment info nếu transaction còn PENDING hoặc SUCCESS
+        if (transaction.status !== 'PENDING' && transaction.status !== 'SUCCESS') {
+            return res.status(400).json({
+                success: false,
+                message: `Transaction đã ${transaction.status === 'CANCELLED' ? 'bị hủy' : transaction.status === 'FAILED' ? 'thất bại' : 'hoàn tất'}. Không thể lấy payment info.`
+            });
+        }
+
+        // Lấy payment info từ payosPayload
+        const paymentInfo = await getPaymentInfo(transaction);
+
+        res.status(200).json({
+            success: true,
+            data: {
+                transactionId: transaction.id,
+                type: transaction.type,
+                amount: transaction.amount,
+                status: transaction.status,
+                ...paymentInfo
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Payment Info Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy payment info'
+        });
+    }
+};
+
+/**
+ * Lấy danh sách transactions của user hiện tại (chỉ thấy transaction của chính mình)
+ * Có phân trang và filter theo type, status
+ */
+exports.getMyTransactions = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { type, status } = req.query; // type: MEMBERSHIP, EVENT_TICKET | status: PENDING, SUCCESS, etc.
+
+        // Build where clause - chỉ lấy transactions của user hiện tại
+        const where = {
+            userId: userId,
+            ...(type && { type: type }),
+            ...(status && { status: status })
+        };
+
+        // Sử dụng pagination utility
+        const { paginateWithWhere } = require('../utils/paginationUtils');
+        const result = await paginateWithWhere(
+            prisma.transaction,
+            where,
+            req.query,
+            {
+                select: {
+                    id: true,
+                    clubId: true,
+                    userId: true,
+                    type: true,
+                    amount: true,
+                    currency: true,
+                    status: true,
+                    paymentMethod: true,
+                    paymentReference: true,
+                    payosPayload: true,
+                    createdAt: true,
+                    confirmedAt: true,
+                    club: {
+                        select: {
+                            id: true,
+                            name: true,
+                            slug: true,
+                            logoUrl: true
+                        }
+                    },
+                    referenceMembership: {
+                        select: {
+                            id: true,
+                            role: true,
+                            status: true,
+                            club: {
+                                select: {
+                                    id: true,
+                                    name: true
+                                }
+                            }
+                        }
+                    },
+                    referenceTicket: {
+                        select: {
+                            id: true,
+                            ticketType: true,
+                            status: true,
+                            price: true,
+                            qrCode: true,
+                            event: {
+                                select: {
+                                    id: true,
+                                    title: true,
+                                    startTime: true,
+                                    endTime: true
+                                }
+                            }
+                        }
+                    }
+                },
+                orderBy: { createdAt: 'desc' },
+                defaultLimit: 10,
+                maxLimit: 50
+            }
+        );
+
+        // Parse payosPayload và thêm payment info cho tất cả transactions có payosPayload
+        const transactionsWithPayment = await Promise.all(
+            result.data.map(async (transaction) => {
+                const transactionObj = {
+                    ...transaction,
+                    payosData: null,
+                    paymentLink: null,
+                    qrCode: null,
+                    qrCodeString: null,
+                    orderCode: transaction.paymentReference,
+                    accountNumber: null,
+                    accountName: null,
+                    bin: null,
+                    paymentLinkId: null
+                };
+
+                // Parse payosPayload nếu có (không chỉ PENDING, mà cả SUCCESS, FAILED, etc.)
+                if (transaction.payosPayload) {
+                    try {
+                        const payosData = JSON.parse(transaction.payosPayload);
+                        transactionObj.payosData = payosData;
+                        transactionObj.paymentLink = payosData.checkoutUrl || null;
+                        transactionObj.orderCode = payosData.orderCode || transaction.paymentReference;
+
+                        // Thêm các thông tin khác từ PayOS
+                        transactionObj.accountNumber = payosData.accountNumber || null;
+                        transactionObj.accountName = payosData.accountName || null;
+                        transactionObj.bin = payosData.bin || null;
+                        transactionObj.paymentLinkId = payosData.paymentLinkId || null;
+                        transactionObj.qrCodeString = payosData.qrCode || null; // QR code string từ PayOS
+
+                        // Generate QR code từ payment link (dạng base64 data URL) - chỉ cho PENDING
+                        // Vì SUCCESS/FAILED thì payment link đã hết hạn hoặc không còn cần thiết
+                        if (transaction.status === 'PENDING' && transactionObj.paymentLink) {
+                            try {
+                                const QRCode = require('qrcode');
+                                transactionObj.qrCode = await QRCode.toDataURL(transactionObj.paymentLink);
+                            } catch (qrError) {
+                                console.error('Error generating QR code:', qrError);
+                            }
+                        }
+                    } catch (parseError) {
+                        console.error('Error parsing payosPayload:', parseError);
+                    }
+                }
+
+                return transactionObj;
+            })
+        );
+
+        res.status(200).json({
+            success: true,
+            data: transactionsWithPayment,
+            pagination: result.pagination
+        });
+
+    } catch (error) {
+        console.error('Get My Transactions Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy danh sách transactions'
         });
     }
 };

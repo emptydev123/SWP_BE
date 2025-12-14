@@ -72,8 +72,8 @@ const requireClubLeader = async (req, res, next) => {
             return res.status(404).json({ message: 'Không tìm thấy CLB' });
         }
 
-        // User is leader if: membership role is LEADER OR club.leaderUserId matches
-        if (membership || club.leaderUserId === userId || req.user.role === 'ADMIN') {
+        // User is leader if: membership role is LEADER OR club.leaderUserId matches OR user is ADMIN
+        if (membership || club.leaderUserId === userId || req.user.auth_role === 'ADMIN') {
             req.clubId = clubId;
             next();
         } else {

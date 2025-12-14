@@ -156,10 +156,106 @@ router.get(
  *       404:
  *         description: Transaction not found
  */
+/**
+ * @swagger
+ * /api/transactions/my:
+ *   get:
+ *     summary: Lấy danh sách transactions của user hiện tại (chỉ thấy transaction của chính mình) - Có phân trang
+ *     tags: [Transactions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [MEMBERSHIP, EVENT_TICKET, TOPUP, REFUND]
+ *           example: "MEMBERSHIP"
+ *         description: Lọc theo loại transaction
+ *       - in: query
+ *         name: status
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [PENDING, SUCCESS, FAILED, CANCELLED, REFUNDED]
+ *           example: "PENDING"
+ *         description: Lọc theo trạng thái
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *           example: 1
+ *         description: Số trang (bắt đầu từ 1)
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 50
+ *           default: 10
+ *           example: 10
+ *         description: Số items mỗi trang (tối đa 50)
+ *     responses:
+ *       200:
+ *         description: Danh sách transactions với pagination
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 pagination:
+ *                   type: object
+ */
+router.get(
+    '/my',
+    auth.authMiddleWare,
+    transactionController.getMyTransactions
+);
+
 router.get(
     '/:transactionId',
     auth.authMiddleWare,
     transactionController.getTransaction
+);
+
+/**
+ * @swagger
+ * /api/transactions/{transactionId}/payment-info:
+ *   get:
+ *     summary: Lấy payment info (payment link, QR code, orderCode) từ transaction
+ *     tags: [Transactions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: transactionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Payment info
+ *       403:
+ *         description: No permission to view
+ *       404:
+ *         description: Transaction not found
+ */
+router.get(
+    '/:transactionId/payment-info',
+    auth.authMiddleWare,
+    auth.requireRole("USER", "ADMIN"),
+    transactionController.getPaymentInfo
 );
 
 module.exports = router;
