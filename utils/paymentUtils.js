@@ -65,7 +65,7 @@ async function formatTransactionWithPayment(transaction, includeQRCode = false) 
  */
 async function getPaymentInfo(transaction) {
     const payosData = parsePayosPayload(transaction.payosPayload);
-    
+
     if (!payosData || !payosData.checkoutUrl) {
         return {
             paymentLink: null,
