@@ -881,6 +881,19 @@ exports.registerEvent = async (req, res) => {
                     ticket.onlineLink = event.onlineLink;
                 }
 
+                // Tạo EventRegistration cho mỗi ticket (chỉ tạo 1 lần cho user đầu tiên)
+                if (i === 0) {
+                    await prisma.eventRegistration.create({
+                        data: {
+                            eventId: eventId,
+                            clubId: event.clubId, // Thêm clubId để query nhanh hơn
+                            userId: userId,
+                            ticketId: ticket.id,
+                            registeredAt: new Date()
+                        }
+                    });
+                }
+
                 tickets.push(ticket);
             }
 
@@ -966,6 +979,20 @@ exports.registerEvent = async (req, res) => {
                 const ticket = await prisma.ticket.create({
                     data: ticketData
                 });
+                
+                // Tạo EventRegistration cho mỗi ticket (chỉ tạo 1 lần cho user đầu tiên)
+                if (i === 0) {
+                    await prisma.eventRegistration.create({
+                        data: {
+                            eventId: eventId,
+                            clubId: event.clubId, // Thêm clubId
+                            userId: userId,
+                            ticketId: ticket.id,
+                            registeredAt: new Date()
+                        }
+                    });
+                }
+                
                 tickets.push(ticket);
             }
 
@@ -1092,6 +1119,159 @@ exports.registerEvent = async (req, res) => {
         res.status(500).json({
             success: false,
             message: error.message || 'Lỗi khi đăng ký event'
+        });
+    }
+};
+
+/**
+ * Lấy danh sách người tham gia event (đã đăng ký)
+ * Club Leader hoặc Staff có thể xem danh sách
+ */
+exports.getEventParticipants = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { checkedIn, search } = req.query; // checkedIn: true/false, search: email hoặc tên
+        const userId = req.userId;
+
+        // 1. Tìm event
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            include: {
+                club: {
+                    select: {
+                        id: true,
+                        name: true,
+                        slug: true
+                    }
+                }
+            }
+        });
+
+        if (!event) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy event'
+            });
+        }
+
+        // 2. Kiểm tra quyền: chỉ club leader, staff hoặc admin mới xem được
+        const membership = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: event.clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: { in: ['LEADER', 'STAFF', 'ADMIN'] }
+            }
+        });
+
+        if (!membership && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ club leader, staff hoặc admin mới có quyền xem danh sách người tham gia'
+            });
+        }
+
+        // 3. Build where clause
+        const where = {
+            eventId: eventId
+        };
+
+        // Filter theo checkedIn status
+        if (checkedIn === 'true') {
+            where.checkedInAt = { not: null };
+        } else if (checkedIn === 'false') {
+            where.checkedInAt = null;
+        }
+
+        // 4. Lấy danh sách registrations
+        const registrations = await prisma.eventRegistration.findMany({
+            where: where,
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true,
+                        studentCode: true,
+                        phone: true
+                    }
+                },
+                ticket: {
+                    select: {
+                        id: true,
+                        ticketType: true,
+                        status: true,
+                        qrCode: true,
+                        onlineLink: true
+                    }
+                },
+                club: {
+                    select: {
+                        id: true,
+                        name: true,
+                        slug: true,
+                        logoUrl: true
+                    }
+                }
+            },
+            orderBy: {
+                registeredAt: 'desc'
+            }
+        });
+
+        // 5. Filter theo search nếu có
+        let filteredRegistrations = registrations;
+        if (search) {
+            const searchLower = search.toLowerCase();
+            filteredRegistrations = registrations.filter(reg => {
+                const email = reg.user.email?.toLowerCase() || '';
+                const fullName = reg.user.fullName?.toLowerCase() || '';
+                const studentCode = reg.user.studentCode?.toLowerCase() || '';
+                return email.includes(searchLower) || 
+                       fullName.includes(searchLower) || 
+                       studentCode.includes(searchLower);
+            });
+        }
+
+        // 6. Format response
+        const formattedData = filteredRegistrations.map(reg => ({
+            id: reg.id,
+            userId: reg.userId,
+            user: reg.user,
+            clubId: reg.clubId,
+            club: reg.club,
+            ticketId: reg.ticketId,
+            ticket: reg.ticket,
+            registeredAt: reg.registeredAt,
+            checkedInAt: reg.checkedInAt,
+            checkinMethod: reg.checkinMethod,
+            isCheckedIn: !!reg.checkedInAt
+        }));
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy danh sách người tham gia thành công',
+            data: {
+                event: {
+                    id: event.id,
+                    title: event.title,
+                    format: event.format,
+                    startTime: event.startTime,
+                    endTime: event.endTime,
+                    club: event.club
+                },
+                participants: formattedData,
+                total: formattedData.length,
+                checkedIn: formattedData.filter(p => p.isCheckedIn).length,
+                notCheckedIn: formattedData.filter(p => !p.isCheckedIn).length
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Event Participants Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy danh sách người tham gia'
         });
     }
 };

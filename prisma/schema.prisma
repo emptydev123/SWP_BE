@@ -35,6 +35,7 @@ model User {
   createdFundRequests  FundRequest[]     @relation("FundRequestCreator")
   tickets              Ticket[]
   transactions         Transaction[]
+  eventRegistrations   EventRegistration[]
 
   @@map("users")
 }
@@ -62,6 +63,7 @@ model Club {
   events               Event[]
   fundRequests         FundRequest[]
   transactions         Transaction[]
+  eventRegistrations   EventRegistration[]
 
   @@map("clubs")
 }
@@ -137,6 +139,7 @@ model Event {
   format       EventFormat   @default(OFFLINE)
   onlineLink   String?       @map("online_link")
   checkins     Checkin[]
+  registrations EventRegistration[]
   club         Club          @relation(fields: [clubId], references: [id], onDelete: Cascade)
   createdBy    User?         @relation("EventCreator", fields: [createdById], references: [id])
   feedbacks    Feedback[]
@@ -161,6 +164,7 @@ model Ticket {
   createdAt          DateTime      @default(now()) @map("created_at")
   onlineLink         String?       @map("online_link")
   checkins           Checkin[]
+  registration       EventRegistration?
   event              Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
   transaction        Transaction?  @relation(fields: [transactionId], references: [id])
   user               User?         @relation(fields: [userId], references: [id])
@@ -250,6 +254,26 @@ model Checkin {
   ticket       Ticket   @relation(fields: [ticketId], references: [id])
 
   @@map("checkins")
+}
+
+model EventRegistration {
+  id            String    @id @default(uuid())
+  eventId       String    @map("event_id")
+  clubId        String    @map("club_id") // Thêm clubId để query nhanh hơn
+  userId        String    @map("user_id")
+  ticketId      String?   @unique @map("ticket_id")
+  registeredAt  DateTime  @default(now()) @map("registered_at")
+  checkedInAt   DateTime? @map("checked_in_at")
+  checkinMethod String?   @map("checkin_method") // QR_CODE hoặc EMAIL
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  event         Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  club          Club      @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id])
+  ticket        Ticket?   @relation(fields: [ticketId], references: [id])
+
+  @@unique([eventId, userId])
+  @@map("event_registrations")
 }
 
 model Feedback {

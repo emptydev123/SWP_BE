@@ -110,13 +110,13 @@ class PayOSService {
 
             // Lấy expiredAt từ response hoặc từ request body (Unix timestamp)
             const expiredAtTimestamp = response.expiredAt || requestBody.expiredAt;
-            const expiredAt = expiredAtTimestamp ? new Date(expiredAtTimestamp * 1000) : null;
+            const expiredAtDate = expiredAtTimestamp ? new Date(expiredAtTimestamp * 1000) : null;
 
             return {
                 success: true,
                 data: response, // Response từ PayOS package
                 paymentLink: response.checkoutUrl,
-                expiredAt: expiredAt // Convert từ Unix timestamp sang Date
+                expiredAt: expiredAtDate // Convert từ Unix timestamp sang Date
             };
 
         } catch (error) {

@@ -307,5 +307,44 @@ router.post('/:eventId/register',
     eventsController.registerEvent
 );
 
+/**
+ * @swagger
+ * /api/events/{eventId}/participants:
+ *   get:
+ *     summary: Get list of event participants (Club Leader/Staff only)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: eventId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Event ID
+ *       - in: query
+ *         name: checkedIn
+ *         schema:
+ *           type: string
+ *           enum: [true, false]
+ *         description: Filter by check-in status
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Search by email, name or student code
+ *     responses:
+ *       200:
+ *         description: List of participants
+ *       403:
+ *         description: No permission
+ *       404:
+ *         description: Event not found
+ */
+router.get('/:eventId/participants',
+    auth.authMiddleWare,
+    eventsController.getEventParticipants
+);
+
 module.exports = router;
 

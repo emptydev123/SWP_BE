@@ -548,8 +548,11 @@ exports.handleWebhook = async (req, res) => {
                 // Update từng ticket
                 for (const ticket of tickets) {
                     if (ticket.status !== 'PAID' || !ticket.qrCode) {
-                        // Generate QR code nếu chưa có
-                        const qrCode = generateQRCode(ticket.eventId, ticket.id);
+                        // Generate QR code nếu chưa có (chỉ cho OFFLINE events)
+                        let qrCode = ticket.qrCode;
+                        if (ticket.event && ticket.event.format === 'OFFLINE' && !qrCode) {
+                            qrCode = generateQRCode(ticket.eventId, ticket.id);
+                        }
                         
                         await prisma.ticket.update({
                             where: { id: ticket.id },
@@ -557,11 +560,11 @@ exports.handleWebhook = async (req, res) => {
                                 status: 'PAID',
                                 purchasedAt: new Date(),
                                 assignedAt: new Date(),
-                                qrCode: qrCode
+                                ...(qrCode && { qrCode: qrCode })
                             }
                         });
                         
-                        console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode}`);
+                        console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode || 'N/A (ONLINE event)'}`);
                     } else {
                         // Ticket đã có QR code, chỉ update status nếu cần
                         if (ticket.status !== 'PAID') {
@@ -573,6 +576,29 @@ exports.handleWebhook = async (req, res) => {
                                 }
                             });
                             console.log(`[Webhook] Updated ticket ${ticket.id} status to PAID`);
+                        }
+                    }
+                    
+                    // Tạo EventRegistration nếu chưa có (chỉ tạo 1 lần cho user đầu tiên)
+                    if (ticket === tickets[0]) {
+                        const existingRegistration = await prisma.eventRegistration.findFirst({
+                            where: {
+                                eventId: ticket.eventId,
+                                userId: ticket.userId
+                            }
+                        });
+                        
+                        if (!existingRegistration) {
+                            await prisma.eventRegistration.create({
+                                data: {
+                                    eventId: ticket.eventId,
+                                    clubId: ticket.event.clubId, // Thêm clubId
+                                    userId: ticket.userId,
+                                    ticketId: ticket.id,
+                                    registeredAt: new Date()
+                                }
+                            });
+                            console.log(`[Webhook] Created EventRegistration for user ${ticket.userId} and event ${ticket.eventId}`);
                         }
                     }
                 }
