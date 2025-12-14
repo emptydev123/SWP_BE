@@ -122,8 +122,17 @@ router.get('/:eventId', eventsController.getEventDetail);
  *                 example: 2024-12-25T12:00:00Z
  *               location:
  *                 type: string
- *                 description: Event location
+ *                 description: Event location (required if format is OFFLINE, not allowed if format is ONLINE)
  *                 example: Room A101
+ *               format:
+ *                 type: string
+ *                 enum: [ONLINE, OFFLINE]
+ *                 description: Event format - ONLINE for online events, OFFLINE for offline events. Default is OFFLINE
+ *                 example: OFFLINE
+ *               onlineLink:
+ *                 type: string
+ *                 description: Google Meet link (required if format is ONLINE, not allowed if format is OFFLINE)
+ *                 example: https://meet.google.com/abc-defg-hij
  *               visibleFrom:
  *                 type: string
  *                 format: date-time
@@ -189,6 +198,13 @@ router.post('/',
  *                 format: date-time
  *               location:
  *                 type: string
+ *               format:
+ *                 type: string
+ *                 enum: [ONLINE, OFFLINE]
+ *                 description: Event format - ONLINE for online events, OFFLINE for offline events
+ *               onlineLink:
+ *                 type: string
+ *                 description: Google Meet link (required if format is ONLINE)
  *               visibleFrom:
  *                 type: string
  *                 format: date-time

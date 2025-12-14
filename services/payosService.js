@@ -104,10 +104,15 @@ class PayOSService {
             // Gọi PayOS API sử dụng package @payos/node (tự động xử lý URL và kết nối)
             const response = await this.payOS.paymentRequests.create(requestBody);
 
+            // Lấy expiredAt từ response hoặc từ request body (Unix timestamp)
+            const expiredAtTimestamp = response.expiredAt || requestBody.expiredAt;
+            const expiredAt = expiredAtTimestamp ? new Date(expiredAtTimestamp * 1000) : null;
+
             return {
                 success: true,
                 data: response, // Response từ PayOS package
-                paymentLink: response.checkoutUrl
+                paymentLink: response.checkoutUrl,
+                expiredAt: expiredAt // Convert từ Unix timestamp sang Date
             };
 
         } catch (error) {
