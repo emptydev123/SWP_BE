@@ -163,6 +163,7 @@ async function handleMembershipPayment(req, res, clubId, userId) {
             buyerName: membership.user.fullName || membership.user.email,
             buyerEmail: membership.user.email,
             buyerPhone: membership.user.phone || '',
+            expireMinutes: 15,
             items: [
                 {
                     name: `Phí gia nhập CLB ${membership.club.name}`,
@@ -328,6 +329,7 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
             buyerName: user.fullName || user.email,
             buyerEmail: user.email,
             buyerPhone: user.phone || '',
+            expireMinutes: 15,
             items: [
                 {
                     name: `Vé ${event.title}${ticketType ? ` - ${ticketType}` : ''}`,

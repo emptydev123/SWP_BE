@@ -59,7 +59,7 @@ class PayOSService {
      */
     async createPaymentLink(paymentData) {
         try {
-            const { orderCode, amount, description, buyerName, buyerEmail, buyerPhone, items, expireMinutes = 60 } = paymentData;
+            const { orderCode, amount, description, buyerName, buyerEmail, buyerPhone, items, expireMinutes = 15 } = paymentData;
 
             // Validate required fields
             if (!orderCode || !amount || !description) {
