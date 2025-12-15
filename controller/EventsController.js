@@ -998,17 +998,26 @@ exports.registerEvent = async (req, res) => {
                     data: ticketData
                 });
                 
-                // Tạo EventRegistration cho mỗi ticket (chỉ tạo 1 lần cho user đầu tiên)
+                // Tạo EventRegistration cho user nếu chưa có (tránh trùng eventId + userId)
                 if (i === 0) {
-                    await prisma.eventRegistration.create({
-                        data: {
+                    const existingRegistration = await prisma.eventRegistration.findFirst({
+                        where: {
                             eventId: eventId,
-                            clubId: event.clubId, // Thêm clubId
-                            userId: userId,
-                            ticketId: ticket.id,
-                            registeredAt: new Date()
+                            userId: userId
                         }
                     });
+
+                    if (!existingRegistration) {
+                        await prisma.eventRegistration.create({
+                            data: {
+                                eventId: eventId,
+                                clubId: event.clubId, // Thêm clubId
+                                userId: userId,
+                                ticketId: ticket.id,
+                                registeredAt: new Date()
+                            }
+                        });
+                    }
                 }
                 
                 tickets.push(ticket);
