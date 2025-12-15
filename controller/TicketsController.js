@@ -51,36 +51,46 @@ exports.getUserTickets = async (req, res) => {
         });
 
         // Format response
-        const formattedTickets = tickets.map(ticket => ({
-            id: ticket.id,
-            qrCode: ticket.qrCode,
-            ticketType: ticket.ticketType,
-            price: ticket.price,
-            status: ticket.status,
-            purchasedAt: ticket.purchasedAt,
-            assignedAt: ticket.assignedAt,
-            usedAt: ticket.usedAt,
-            createdAt: ticket.createdAt,
-            event: {
-                id: ticket.event.id,
-                title: ticket.event.title,
-                description: ticket.event.description,
-                type: ticket.event.type,
-                pricingType: ticket.event.pricingType,
-                startTime: ticket.event.startTime,
-                endTime: ticket.event.endTime,
-                location: ticket.event.location,
-                format: ticket.event.format,
-                isActive: ticket.event.isActive,
-                club: ticket.event.club
-            },
-            transaction: ticket.transaction ? {
-                id: ticket.transaction.id,
-                status: ticket.transaction.status,
-                paymentMethod: ticket.transaction.paymentMethod,
-                createdAt: ticket.transaction.createdAt
-            } : null
-        }));
+        const formattedTickets = tickets.map(ticket => {
+            const ticketData = {
+                id: ticket.id,
+                ticketType: ticket.ticketType,
+                price: ticket.price,
+                status: ticket.status,
+                purchasedAt: ticket.purchasedAt,
+                assignedAt: ticket.assignedAt,
+                usedAt: ticket.usedAt,
+                createdAt: ticket.createdAt,
+                event: {
+                    id: ticket.event.id,
+                    title: ticket.event.title,
+                    description: ticket.event.description,
+                    type: ticket.event.type,
+                    pricingType: ticket.event.pricingType,
+                    startTime: ticket.event.startTime,
+                    endTime: ticket.event.endTime,
+                    location: ticket.event.location,
+                    format: ticket.event.format,
+                    isActive: ticket.event.isActive,
+                    club: ticket.event.club
+                },
+                transaction: ticket.transaction ? {
+                    id: ticket.transaction.id,
+                    status: ticket.transaction.status,
+                    paymentMethod: ticket.transaction.paymentMethod,
+                    createdAt: ticket.transaction.createdAt
+                } : null
+            };
+
+            // Thêm onlineLink hoặc qrCode tùy theo format của event
+            if (ticket.event.format === 'ONLINE') {
+                ticketData.onlineLink = ticket.onlineLink;
+            } else {
+                ticketData.qrCode = ticket.qrCode;
+            }
+
+            return ticketData;
+        });
 
         res.status(200).json({
             success: true,
@@ -189,7 +199,6 @@ exports.getTicketDetail = async (req, res) => {
         // Format response
         const formattedTicket = {
             id: ticket.id,
-            qrCode: ticket.qrCode,
             ticketType: ticket.ticketType,
             price: ticket.price,
             status: ticket.status,
@@ -204,6 +213,7 @@ exports.getTicketDetail = async (req, res) => {
                 type: ticket.event.type,
                 pricingType: ticket.event.pricingType,
                 price: ticket.event.price,
+                format: ticket.event.format,
                 capacity: ticket.event.capacity,
                 startTime: ticket.event.startTime,
                 endTime: ticket.event.endTime,
@@ -235,6 +245,13 @@ exports.getTicketDetail = async (req, res) => {
             isCheckedIn: ticket.checkins.length > 0,
             lastCheckin: ticket.checkins.length > 0 ? ticket.checkins[0] : null
         };
+
+        // Thêm onlineLink hoặc qrCode tùy theo format của event
+        if (ticket.event.format === 'ONLINE') {
+            formattedTicket.onlineLink = ticket.onlineLink;
+        } else {
+            formattedTicket.qrCode = ticket.qrCode;
+        }
 
         res.status(200).json({
             success: true,

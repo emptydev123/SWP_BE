@@ -1,6 +1,7 @@
 const prisma = require('../prisma/client');
 const payosService = require('../services/payosService');
 const { generateQRCode } = require('../utils/ticketUtils');
+const QRCode = require('qrcode');
 const { formatTransactionWithPayment, getPaymentInfo } = require('../utils/paymentUtils');
 
 /**
@@ -126,6 +127,8 @@ async function handleMembershipPayment(req, res, clubId, userId) {
                     data: {
                         transactionId: existingTransaction.id,
                         paymentLink: payosData.checkoutUrl,
+                        qrCode: existingTransaction.qr_code,
+                        timeOut: existingTransaction.time_out,
                         orderCode: payosData.orderCode
                     }
                 });
@@ -169,11 +172,21 @@ async function handleMembershipPayment(req, res, clubId, userId) {
             ]
         });
 
-        // 9. Cập nhật transaction với PayOS data
+        // 9. Generate QR code từ payment link
+        let qrCodeDataUrl = null;
+        try {
+            qrCodeDataUrl = await QRCode.toDataURL(paymentResult.paymentLink);
+        } catch (qrError) {
+            console.error('Error generating QR code:', qrError);
+        }
+
+        // 10. Cập nhật transaction với PayOS data, QR code và timeout
         await prisma.transaction.update({
             where: { id: transaction.id },
             data: {
                 paymentReference: orderCode.toString(),
+                qr_code: qrCodeDataUrl,
+                time_out: paymentResult.expiredAt,
                 payosPayload: JSON.stringify({
                     orderCode: orderCode,
                     checkoutUrl: paymentResult.paymentLink,
@@ -188,6 +201,8 @@ async function handleMembershipPayment(req, res, clubId, userId) {
             data: {
                 transactionId: transaction.id,
                 paymentLink: paymentResult.paymentLink,
+                qrCode: qrCodeDataUrl,
+                timeOut: paymentResult.expiredAt,
                 orderCode: orderCode,
                 amount: membership.club.membershipFeeAmount,
                 description: `Phí gia nhập CLB: ${membership.club.name}`
@@ -322,11 +337,21 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
             ]
         });
 
-        // 12. Cập nhật transaction với PayOS data
+        // 12. Generate QR code từ payment link
+        let qrCodeDataUrl = null;
+        try {
+            qrCodeDataUrl = await QRCode.toDataURL(paymentResult.paymentLink);
+        } catch (qrError) {
+            console.error('Error generating QR code:', qrError);
+        }
+
+        // 13. Cập nhật transaction với PayOS data, QR code và timeout
         await prisma.transaction.update({
             where: { id: transaction.id },
             data: {
                 paymentReference: orderCode.toString(),
+                qr_code: qrCodeDataUrl,
+                time_out: paymentResult.expiredAt,
                 payosPayload: JSON.stringify({
                     orderCode: orderCode,
                     checkoutUrl: paymentResult.paymentLink,
@@ -342,6 +367,8 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
             data: {
                 transactionId: transaction.id,
                 paymentLink: paymentResult.paymentLink,
+                qrCode: qrCodeDataUrl,
+                timeOut: paymentResult.expiredAt,
                 orderCode: orderCode,
                 amount: totalAmount,
                 quantity: quantity,
@@ -518,23 +545,26 @@ exports.handleWebhook = async (req, res) => {
 
                 console.log(`[Webhook] Updating ${tickets.length} tickets for transaction ${transaction.id}`);
 
-                // Update từng ticket và generate QR code
+                // Update từng ticket
                 for (const ticket of tickets) {
                     if (ticket.status !== 'PAID' || !ticket.qrCode) {
-                        // Generate QR code nếu chưa có
-                        const qrCode = generateQRCode(ticket.eventId, ticket.id);
-
+                        // Generate QR code nếu chưa có (chỉ cho OFFLINE events)
+                        let qrCode = ticket.qrCode;
+                        if (ticket.event && ticket.event.format === 'OFFLINE' && !qrCode) {
+                            qrCode = generateQRCode(ticket.eventId, ticket.id);
+                        }
+                        
                         await prisma.ticket.update({
                             where: { id: ticket.id },
                             data: {
                                 status: 'PAID',
                                 purchasedAt: new Date(),
                                 assignedAt: new Date(),
-                                qrCode: qrCode
+                                ...(qrCode && { qrCode: qrCode })
                             }
                         });
-
-                        console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode}`);
+                        
+                        console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode || 'N/A (ONLINE event)'}`);
                     } else {
                         // Ticket đã có QR code, chỉ update status nếu cần
                         if (ticket.status !== 'PAID') {
@@ -546,6 +576,29 @@ exports.handleWebhook = async (req, res) => {
                                 }
                             });
                             console.log(`[Webhook] Updated ticket ${ticket.id} status to PAID`);
+                        }
+                    }
+                    
+                    // Tạo EventRegistration nếu chưa có (chỉ tạo 1 lần cho user đầu tiên)
+                    if (ticket === tickets[0]) {
+                        const existingRegistration = await prisma.eventRegistration.findFirst({
+                            where: {
+                                eventId: ticket.eventId,
+                                userId: ticket.userId
+                            }
+                        });
+                        
+                        if (!existingRegistration) {
+                            await prisma.eventRegistration.create({
+                                data: {
+                                    eventId: ticket.eventId,
+                                    clubId: ticket.event.clubId, // Thêm clubId
+                                    userId: ticket.userId,
+                                    ticketId: ticket.id,
+                                    registeredAt: new Date()
+                                }
+                            });
+                            console.log(`[Webhook] Created EventRegistration for user ${ticket.userId} and event ${ticket.eventId}`);
                         }
                     }
                 }
@@ -701,17 +754,19 @@ exports.handleReturn = async (req, res) => {
                     const updatedTickets = [];
                     for (const ticket of tickets) {
                         if (ticket.status !== 'PAID') {
-                            // Generate QR code nếu chưa có
-                            if (!ticket.qrCode) {
+                            const updateData = {
+                                status: 'PAID',
+                                purchasedAt: new Date(),
+                                assignedAt: new Date()
+                            };
+
+                            // Chỉ generate QR code nếu event format là OFFLINE
+                            if (ticket.event && ticket.event.format === 'OFFLINE' && !ticket.qrCode) {
                                 const qrCode = generateQRCode(ticket.eventId, ticket.id);
+                                updateData.qrCode = qrCode;
                                 await prisma.ticket.update({
                                     where: { id: ticket.id },
-                                    data: {
-                                        status: 'PAID',
-                                        purchasedAt: new Date(),
-                                        assignedAt: new Date(),
-                                        qrCode: qrCode
-                                    }
+                                    data: updateData
                                 });
                                 updatedTickets.push({
                                     id: ticket.id,
@@ -720,31 +775,42 @@ exports.handleReturn = async (req, res) => {
                                     status: 'PAID'
                                 });
                             } else {
+                                // ONLINE event hoặc đã có QR code
                                 await prisma.ticket.update({
                                     where: { id: ticket.id },
-                                    data: {
-                                        status: 'PAID',
-                                        purchasedAt: new Date()
-                                    }
+                                    data: updateData
                                 });
-                                updatedTickets.push({
+                                const ticketData = {
                                     id: ticket.id,
-                                    qrCode: ticket.qrCode,
                                     ticketType: ticket.ticketType,
                                     status: 'PAID'
-                                });
+                                };
+                                // Thêm onlineLink hoặc qrCode tùy theo format
+                                if (ticket.event && ticket.event.format === 'ONLINE') {
+                                    ticketData.onlineLink = ticket.onlineLink;
+                                } else {
+                                    ticketData.qrCode = ticket.qrCode;
+                                }
+                                updatedTickets.push(ticketData);
                             }
                         } else {
-                            updatedTickets.push({
+                            // Ticket đã PAID, chỉ cần format response
+                            const ticketData = {
                                 id: ticket.id,
-                                qrCode: ticket.qrCode,
                                 ticketType: ticket.ticketType,
                                 status: ticket.status
-                            });
+                            };
+                            // Thêm onlineLink hoặc qrCode tùy theo format
+                            if (ticket.event && ticket.event.format === 'ONLINE') {
+                                ticketData.onlineLink = ticket.onlineLink;
+                            } else {
+                                ticketData.qrCode = ticket.qrCode;
+                            }
+                            updatedTickets.push(ticketData);
                         }
                     }
 
-                    // Trả về response với QR codes
+                    // Trả về response với QR codes hoặc onlineLink
                     return res.status(200).json({
                         success: true,
                         message: 'Thanh toán thành công',
@@ -918,19 +984,22 @@ exports.getTransaction = async (req, res) => {
         }
 
         // Kiểm tra quyền: chỉ user sở hữu transaction mới xem được
-        if (transaction.userId !== userId && req.user.role !== 'ADMIN') {
+        if (transaction.userId !== userId && req.user.auth_role !== 'ADMIN') {
             return res.status(403).json({
                 success: false,
                 message: 'Không có quyền xem transaction này'
             });
         }
 
-        // Format transaction với payment info từ payosPayload
-        const responseData = await formatTransactionWithPayment(transaction, true); // includeQRCode = true
-
-        // Thêm các thông tin khác
-        responseData.club = transaction.club;
-        responseData.user = transaction.user;
+        // Parse payosPayload để lấy payosData
+        let payosData = null;
+        if (transaction.payosPayload) {
+            try {
+                payosData = JSON.parse(transaction.payosPayload);
+            } catch (error) {
+                console.error('Error parsing payosPayload:', error);
+            }
+        }
 
         // Nếu là EVENT_TICKET, lấy tất cả tickets và QR codes
         let tickets = [];
@@ -946,7 +1015,9 @@ exports.getTransaction = async (req, res) => {
                             title: true,
                             startTime: true,
                             endTime: true,
-                            location: true
+                            location: true,
+                            format: true,
+                            onlineLink: true
                         }
                     }
                 },
@@ -955,39 +1026,73 @@ exports.getTransaction = async (req, res) => {
                 }
             });
 
-            // Nếu transaction đã SUCCESS nhưng tickets chưa có QR code, generate ngay
+            // Nếu transaction đã SUCCESS nhưng tickets chưa có QR code, generate ngay (chỉ cho OFFLINE events)
             if (transaction.status === 'SUCCESS') {
                 for (const ticket of tickets) {
-                    if (ticket.status !== 'PAID' || !ticket.qrCode) {
+                    if (ticket.status !== 'PAID') {
+                        const updateData = {
+                            status: 'PAID',
+                            purchasedAt: ticket.purchasedAt || new Date(),
+                            assignedAt: ticket.assignedAt || new Date()
+                        };
+
+                        // Chỉ generate QR code nếu event format là OFFLINE
+                        if (ticket.event && ticket.event.format === 'OFFLINE' && !ticket.qrCode) {
+                            const qrCode = generateQRCode(ticket.eventId, ticket.id);
+                            updateData.qrCode = qrCode;
+                            ticket.qrCode = qrCode;
+                        }
+
+                        await prisma.ticket.update({
+                            where: { id: ticket.id },
+                            data: updateData
+                        });
+                        ticket.status = 'PAID';
+                    } else if (ticket.event && ticket.event.format === 'OFFLINE' && !ticket.qrCode) {
+                        // Nếu ticket đã PAID nhưng chưa có QR code (cho OFFLINE events)
                         const qrCode = generateQRCode(ticket.eventId, ticket.id);
                         await prisma.ticket.update({
                             where: { id: ticket.id },
-                            data: {
-                                status: 'PAID',
-                                purchasedAt: ticket.purchasedAt || new Date(),
-                                assignedAt: ticket.assignedAt || new Date(),
-                                qrCode: qrCode
-                            }
+                            data: { qrCode: qrCode }
                         });
                         ticket.qrCode = qrCode;
-                        ticket.status = 'PAID';
                     }
                 }
             }
         }
 
+        // Format response với payment info từ payosPayload
+        const responseData = await formatTransactionWithPayment(transaction, true); // includeQRCode = true
+        
+        // Thêm các thông tin khác
+        responseData.club = transaction.club;
+        responseData.user = transaction.user;
+        responseData.payosData = payosData;
+
         // Thêm tickets nếu là EVENT_TICKET
         if (transaction.type === 'EVENT_TICKET') {
-            responseData.tickets = tickets.map(ticket => ({
-                id: ticket.id,
-                qrCode: ticket.qrCode,
-                ticketType: ticket.ticketType,
-                status: ticket.status,
-                price: ticket.price,
-                purchasedAt: ticket.purchasedAt,
-                assignedAt: ticket.assignedAt,
-                event: ticket.event
-            }));
+            responseData.tickets = tickets.map(ticket => {
+                const ticketData = {
+                    id: ticket.id,
+                    ticketType: ticket.ticketType,
+                    status: ticket.status,
+                    price: ticket.price,
+                    purchasedAt: ticket.purchasedAt,
+                    assignedAt: ticket.assignedAt,
+                    event: {
+                        ...ticket.event
+                    }
+                };
+
+                // Nếu event là ONLINE, thêm onlineLink từ ticket; nếu OFFLINE, thêm QR code
+                if (ticket.event && ticket.event.format === 'ONLINE') {
+                    ticketData.onlineLink = ticket.onlineLink;
+                } else if (ticket.event && ticket.event.format === 'OFFLINE') {
+                    ticketData.qrCode = ticket.qrCode;
+                }
+
+                return ticketData;
+            });
         }
 
         // Thêm membership info nếu là MEMBERSHIP
