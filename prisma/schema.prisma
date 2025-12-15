@@ -294,7 +294,7 @@ model event_registrations {
   id             String    @id
   event_id       String
   club_id        String
-  user_id        String
+  user_id        String 
   ticket_id      String?   @unique
   registered_at  DateTime  @default(now())
   checked_in_at  DateTime?

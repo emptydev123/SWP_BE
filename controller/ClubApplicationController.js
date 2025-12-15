@@ -2,6 +2,10 @@ const prisma = require('../prisma/client');
 const payosService = require('../services/payosService');
 const QRCode = require('qrcode');
 const { paginateWithWhere } = require('../utils/paginationUtils');
+const {
+    sendApplicationApprovedEmail,
+    sendApplicationRejectedEmail
+} = require('../services/emailService');
 
 /**
  * User request vào club
@@ -157,7 +161,7 @@ exports.reviewApplication = async (req, res) => {
             });
         }
 
-        // Nếu là reject → chỉ cần update status
+        // Nếu là reject → chỉ cần update status, gửi email
         if (!isApprove) {
             const updatedApplication = await prisma.clubApplication.update({
                 where: { id: applicationId },
@@ -168,6 +172,17 @@ exports.reviewApplication = async (req, res) => {
                     reviewedAt: new Date()
                 }
             });
+
+            // Gửi email thông báo bị từ chối (best-effort, không chặn luồng)
+            try {
+                await sendApplicationRejectedEmail(
+                    application.user.email,
+                    application.club.name,
+                    reviewNotes || ''
+                );
+            } catch (mailErr) {
+                console.error('Send reject email error:', mailErr);
+            }
 
             return res.status(200).json({
                 success: true,
@@ -294,6 +309,21 @@ exports.reviewApplication = async (req, res) => {
                             })
                         }
                     });
+
+                    // Gửi email thông báo approve + link thanh toán (best-effort)
+                    try {
+                        await sendApplicationApprovedEmail(
+                            application.user.email,
+                            application.club.name,
+                            {
+                                paymentLink: paymentResult.paymentLink,
+                                amount: application.club.membershipFeeAmount,
+                                orderCode
+                            }
+                        );
+                    } catch (mailErr) {
+                        console.error('Send approve email error:', mailErr);
+                    }
                 } catch (payosError) {
                     console.error('Error creating PayOS payment link:', payosError);
                     // Nếu lỗi PayOS, vẫn trả về response nhưng không có payment link
@@ -392,6 +422,16 @@ exports.reviewApplication = async (req, res) => {
             return { application: updatedApplication, membership };
         });
 
+        // Gửi email thông báo approve (club free) - best-effort
+        try {
+            await sendApplicationApprovedEmail(
+                application.user.email,
+                application.club.name
+            );
+        } catch (mailErr) {
+            console.error('Send approve email error:', mailErr);
+        }
+
         res.status(200).json({
             success: true,
             message: "Đơn xin tham gia đã được duyệt và thành viên đã được thêm vào club",
@@ -489,9 +529,9 @@ exports.getClubApplications = async (req, res) => {
 
 /**
  * Lấy danh sách đơn gia nhập mà user có quyền xem
- * - Nếu user là leader của Club A → thấy đơn gia nhập của Club A
- * - Nếu user là member của Club B → KHÔNG thấy đơn gia nhập của Club B
  * - Nếu user là ADMIN → thấy tất cả đơn
+ * - Nếu user là leader của Club A → thấy đơn gia nhập của Club A
+ * - Nếu user đã apply vào Club B → thấy đơn của chính họ (đơn mà họ đã apply)
  * - Có phân trang
  */
 exports.getMyApplications = async (req, res) => {
@@ -556,7 +596,10 @@ exports.getMyApplications = async (req, res) => {
             });
         }
 
-        // Nếu không phải ADMIN → chỉ thấy đơn của các clubs mà user là leader
+        // Nếu không phải ADMIN → thấy:
+        // 1. Đơn của các clubs mà user là leader
+        // 2. Đơn mà user đã apply (đơn của chính họ)
+
         // 1. Lấy danh sách clubs mà user là leader
         const clubsWhereUserIsLeader = await prisma.club.findMany({
             where: {
@@ -565,32 +608,28 @@ exports.getMyApplications = async (req, res) => {
             select: {
                 id: true
             }
-            // Có thể thêm điều kiện isActive nếu cần
         });
 
         const clubIds = clubsWhereUserIsLeader.map(club => club.id);
 
-        if (clubIds.length === 0) {
-            // User không phải leader của club nào → trả về empty
-            return res.status(200).json({
-                success: true,
-                data: [],
-                pagination: {
-                    currentPage: 1,
-                    limit: 10,
-                    total: 0,
-                    totalPages: 0,
-                    hasNext: false,
-                    hasPrev: false,
-                    nextPage: null,
-                    prevPage: null
-                }
+        // 2. Tạo where condition: OR giữa đơn của clubs mà user là leader VÀ đơn mà user đã apply
+        const whereConditions = [];
+
+        // Điều kiện: đơn của clubs mà user là leader
+        if (clubIds.length > 0) {
+            whereConditions.push({
+                clubId: { in: clubIds }
             });
         }
 
-        // 2. Lấy applications của các clubs mà user là leader
+        // Điều kiện: đơn mà user đã apply (đơn của chính họ)
+        whereConditions.push({
+            userId: userId
+        });
+
+        // Tạo where với OR condition
         const where = {
-            clubId: { in: clubIds },
+            OR: whereConditions,
             ...(status && { status: status })
         };
 

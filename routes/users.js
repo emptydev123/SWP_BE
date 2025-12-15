@@ -109,6 +109,47 @@ router.get('/getprofile', auth.authMiddleWare,
 
 /**
  * @swagger
+ * /api/users/profile:
+ *   patch:
+ *     summary: Cập nhật profile của user hiện tại
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               fullName:
+ *                 type: string
+ *                 example: "Nguyễn Văn A"
+ *               phone:
+ *                 type: string
+ *                 example: "0901234567"
+ *               avatarUrl:
+ *                 type: string
+ *                 example: "https://example.com/avatar.png"
+ *               studentCode:
+ *                 type: string
+ *                 example: "SE123456"
+ *     responses:
+ *       200:
+ *         description: Cập nhật profile thành công
+ *       400:
+ *         description: Không có dữ liệu cập nhật hoặc studentCode trùng
+ *       401:
+ *         description: Unauthorized
+ */
+router.patch('/profile',
+    auth.authMiddleWare,
+    auth.requireRole('USER', 'ADMIN'),
+    user.updateProfileUser
+);
+
+/**
+ * @swagger
  * /api/users/getallprofile:
  *   get:
  *     summary: Lấy tất cả user (Admin only)

@@ -655,6 +655,112 @@ exports.getClubDetail = async (req, res) => {
 };
 
 /**
+ * Lấy danh sách members của một club
+ * - ADMIN: xem được tất cả
+ * - Leader của club: xem được members club đó
+ * - Member của club: xem được members cùng club
+ * - Có phân trang
+ */
+exports.getClubMembers = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const { status } = req.query; // optional: ACTIVE, PENDING_PAYMENT,...
+        const userId = req.userId;
+
+        // 1. Kiểm tra club tồn tại
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: {
+                id: true,
+                name: true,
+                leaderUserId: true
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({
+                success: false,
+                message: "Club không tồn tại"
+            });
+        }
+
+        // 2. Kiểm tra quyền xem:
+        // - ADMIN luôn được phép
+        // - Leader của club
+        // - Member ACTIVE của club
+        let hasAccess = false;
+        if (req.user.auth_role === 'ADMIN' || club.leaderUserId === userId) {
+            hasAccess = true;
+        } else {
+            const membership = await prisma.clubMembership.findFirst({
+                where: {
+                    clubId: clubId,
+                    userId: userId,
+                    status: 'ACTIVE'
+                },
+                select: { id: true }
+            });
+            if (membership) hasAccess = true;
+        }
+
+        if (!hasAccess) {
+            return res.status(403).json({
+                success: false,
+                message: "Bạn không có quyền xem danh sách thành viên của club này"
+            });
+        }
+
+        // 3. Lấy danh sách members với phân trang
+        const where = {
+            clubId: clubId,
+            ...(status && { status: status })
+        };
+
+        const result = await paginateWithWhere(
+            prisma.clubMembership,
+            where,
+            req.query,
+            {
+                select: {
+                    id: true,
+                    clubId: true,
+                    userId: true,
+                    role: true,
+                    status: true,
+                    joinedAt: true,
+                    activatedAt: true,
+                    notes: true,
+                    user: {
+                        select: {
+                            id: true,
+                            email: true,
+                            fullName: true,
+                            studentCode: true,
+                            phone: true,
+                            avatarUrl: true
+                        }
+                    }
+                },
+                orderBy: { createdAt: 'desc' },
+                defaultLimit: 10,
+                maxLimit: 100
+            }
+        );
+
+        return res.status(200).json({
+            success: true,
+            ...result
+        });
+    } catch (error) {
+        console.error("Get Club Members Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+/**
  * Update leader của club (Leader hiện tại chuyển quyền cho member khác)
  */
 exports.updateClubLeader = async (req, res) => {

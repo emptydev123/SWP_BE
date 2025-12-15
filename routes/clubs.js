@@ -118,6 +118,69 @@ router.get('/:slug',
 
 /**
  * @swagger
+ * /api/clubs/{clubId}/members:
+ *   get:
+ *     summary: Lấy danh sách thành viên của một club (Leader hoặc member của club mới xem được, ADMIN xem tất cả)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của club
+ *       - in: query
+ *         name: status
+ *         required: false
+ *         schema:
+ *           type: string
+ *           example: "ACTIVE"
+ *         description: Lọc theo trạng thái membership (vd ACTIVE, PENDING_PAYMENT)
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *         description: Số trang (bắt đầu từ 1)
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 10
+ *         description: Số items mỗi trang (tối đa 100)
+ *     responses:
+ *       200:
+ *         description: Danh sách thành viên của club với pagination
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 pagination:
+ *                   type: object
+ *       403:
+ *         description: Không có quyền xem danh sách members của club
+ */
+router.get('/:clubId/members',
+    auth.authMiddleWare,
+    auth.requireRole('USER', 'ADMIN'),
+    clubController.getClubMembers);
+
+/**
+ * @swagger
  * /api/clubs:
  *   post:
  *     summary: Tạo CLB mới với import Excel (Admin Only)

@@ -148,6 +148,68 @@ exports.getProfileUser = async (req, res) => {
     }
 }
 
+// UPDATE PROFILE
+exports.updateProfileUser = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { fullName, phone, avatarUrl, studentCode } = req.body;
+
+        // Không có gì để cập nhật
+        if (!fullName && !phone && !avatarUrl && !studentCode) {
+            return res.status(400).json({
+                success: false,
+                message: "Không có dữ liệu để cập nhật"
+            });
+        }
+
+        const updateData = {};
+        if (fullName !== undefined) updateData.fullName = fullName;
+        if (phone !== undefined) updateData.phone = phone;
+        if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl;
+
+        // Nếu có studentCode, kiểm tra unique
+        if (studentCode !== undefined) {
+            const existingStudent = await prisma.user.findUnique({
+                where: { studentCode }
+            });
+            if (existingStudent && existingStudent.id !== userId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Student Code đã tồn tại"
+                });
+            }
+            updateData.studentCode = studentCode;
+        }
+
+        const updated = await prisma.user.update({
+            where: { id: userId },
+            data: updateData,
+            select: {
+                id: true,
+                email: true,
+                fullName: true,
+                phone: true,
+                studentCode: true,
+                avatarUrl: true,
+                auth_role: true,
+                updatedAt: true
+            }
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Cập nhật profile thành công",
+            data: updated
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Internal Server Error"
+        });
+    }
+};
+
 // GET ALL USERS (Admin only - placeholder logic since no global role)
 exports.getAllProfileUsers = async (req, res) => {
     try {
