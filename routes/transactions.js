@@ -258,4 +258,33 @@ router.get(
     transactionController.getPaymentInfo
 );
 
+/**
+ * @swagger
+ * /api/transactions/{transactionId}/check-status:
+ *   post:
+ *     summary: Check and sync payment status from PayOS
+ *     description: Kiểm tra trạng thái thanh toán từ PayOS và tự động cập nhật DB nếu đã thanh toán thành công
+ *     tags: [Transactions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: transactionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Status checked and synced
+ *       403:
+ *         description: No permission
+ *       404:
+ *         description: Transaction not found
+ */
+router.post(
+    '/:transactionId/check-status',
+    auth.authMiddleWare,
+    transactionController.checkAndSyncPaymentStatus
+);
+
 module.exports = router;

@@ -1340,3 +1340,190 @@ exports.getMyTransactions = async (req, res) => {
     }
 };
 
+/**
+ * Check and sync payment status from PayOS
+ * Frontend gọi API này để kiểm tra và đồng bộ trạng thái thanh toán
+ * Dùng khi không có webhook hoặc muốn verify tức thì
+ */
+exports.checkAndSyncPaymentStatus = async (req, res) => {
+    try {
+        const { transactionId } = req.params;
+        const userId = req.userId;
+
+        // 1. Tìm transaction
+        const transaction = await prisma.transaction.findUnique({
+            where: { id: transactionId },
+            include: {
+                referenceMembership: {
+                    include: {
+                        user: { select: { id: true, email: true, fullName: true } },
+                        club: { select: { id: true, name: true } }
+                    }
+                },
+                club: { select: { id: true, name: true } }
+            }
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy transaction'
+            });
+        }
+
+        // 2. Kiểm tra quyền - chỉ cho phép user sở hữu transaction
+        if (transaction.userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: 'Không có quyền kiểm tra transaction này'
+            });
+        }
+
+        // 3. Nếu đã SUCCESS hoặc FAILED thì không cần check nữa
+        if (transaction.status === 'SUCCESS') {
+            return res.status(200).json({
+                success: true,
+                message: 'Đã thanh toán thành công',
+                data: {
+                    transactionId: transaction.id,
+                    status: 'SUCCESS',
+                    syncedAt: transaction.confirmedAt
+                }
+            });
+        }
+
+        if (transaction.status === 'FAILED' || transaction.status === 'CANCELLED') {
+            return res.status(200).json({
+                success: true,
+                message: 'Giao dịch đã bị hủy hoặc thất bại',
+                data: {
+                    transactionId: transaction.id,
+                    status: transaction.status
+                }
+            });
+        }
+
+        // 4. Nếu PENDING, check với PayOS
+        if (!transaction.paymentReference) {
+            return res.status(400).json({
+                success: false,
+                message: 'Transaction chưa có orderCode'
+            });
+        }
+
+        console.log(`[Check Status] Checking transaction ${transaction.id} with orderCode ${transaction.paymentReference}`);
+
+        try {
+            const paymentInfo = await payosService.getPaymentInfo(parseInt(transaction.paymentReference));
+            const payosStatus = paymentInfo.data?.status;
+
+            console.log(`[Check Status] PayOS returned status: ${payosStatus}`);
+
+            // 5. Nếu PayOS báo đã PAID → cập nhật DB
+            if (payosStatus === 'PAID') {
+                console.log(`[Check Status] Syncing transaction ${transaction.id} to SUCCESS`);
+
+                // Update transaction
+                await prisma.transaction.update({
+                    where: { id: transaction.id },
+                    data: {
+                        status: 'SUCCESS',
+                        confirmedAt: new Date()
+                    }
+                });
+
+                // Nếu là MEMBERSHIP, update membership status
+                if (transaction.type === 'MEMBERSHIP' && transaction.referenceMembershipId) {
+                    await prisma.clubMembership.update({
+                        where: { id: transaction.referenceMembershipId },
+                        data: {
+                            status: 'ACTIVE',
+                            activatedAt: new Date(),
+                            joinedAt: new Date()
+                        }
+                    });
+
+                    // Tạo ledger entry
+                    const lastLedger = await prisma.clubLedger.findFirst({
+                        where: { clubId: transaction.clubId },
+                        orderBy: { createdAt: 'desc' }
+                    });
+
+                    const balanceAfter = (lastLedger?.balanceAfter || 0) + transaction.amount;
+
+                    await prisma.clubLedger.create({
+                        data: {
+                            clubId: transaction.clubId,
+                            type: 'INCOME',
+                            transactionId: transaction.id,
+                            amount: transaction.amount,
+                            balanceAfter: balanceAfter,
+                            note: `Phí gia nhập từ ${transaction.referenceMembership?.user?.email || 'N/A'}`
+                        }
+                    });
+
+                    console.log(`[Check Status] Membership ${transaction.referenceMembershipId} activated`);
+                }
+
+                return res.status(200).json({
+                    success: true,
+                    message: 'Thanh toán thành công! Đã cập nhật trạng thái.',
+                    data: {
+                        transactionId: transaction.id,
+                        status: 'SUCCESS',
+                        previousStatus: 'PENDING',
+                        syncedAt: new Date()
+                    }
+                });
+            }
+
+            // 6. Nếu PayOS báo CANCELLED, EXPIRED
+            if (payosStatus === 'CANCELLED' || payosStatus === 'EXPIRED') {
+                await prisma.transaction.update({
+                    where: { id: transaction.id },
+                    data: { status: 'CANCELLED' }
+                });
+
+                return res.status(200).json({
+                    success: true,
+                    message: 'Giao dịch đã bị hủy hoặc hết hạn',
+                    data: {
+                        transactionId: transaction.id,
+                        status: 'CANCELLED',
+                        payosStatus: payosStatus
+                    }
+                });
+            }
+
+            // 7. Vẫn PENDING
+            return res.status(200).json({
+                success: true,
+                message: 'Giao dịch vẫn đang chờ thanh toán',
+                data: {
+                    transactionId: transaction.id,
+                    status: 'PENDING',
+                    payosStatus: payosStatus
+                }
+            });
+
+        } catch (payosError) {
+            console.error('[Check Status] PayOS API error:', payosError);
+            return res.status(200).json({
+                success: true,
+                message: 'Không thể kiểm tra với PayOS, giữ nguyên trạng thái',
+                data: {
+                    transactionId: transaction.id,
+                    status: transaction.status,
+                    error: 'PayOS API unavailable'
+                }
+            });
+        }
+
+    } catch (error) {
+        console.error('Check Payment Status Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi kiểm tra trạng thái thanh toán'
+        });
+    }
+};
