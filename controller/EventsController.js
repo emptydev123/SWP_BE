@@ -248,16 +248,31 @@ exports.createEvent = async (req, res) => {
  */
 exports.getAllEvents = async (req, res) => {
     try {
-        const { clubId, type, pricingType } = req.query;
+        const { clubId, type, pricingType, includeInactive } = req.query;
         const userId = req.userId; // Luôn có giá trị vì đã bắt buộc login
 
         // Normalize type to uppercase
         const normalizedType = type ? type.toUpperCase() : null;
 
         // Build where clause
-        const where = {
-            isActive: true
-        };
+        const where = {};
+        const now = new Date();
+        
+        // Filter by endTime instead of isActive status
+        // This allows staff to see all their assigned events, including ended ones
+        if (includeInactive !== 'true') {
+            // Only show events that haven't ended yet
+            // If endTime is null, use startTime as the end time
+            where.OR = [
+                { endTime: { gte: now } }, // Has endTime and it's in the future
+                { 
+                    AND: [
+                        { endTime: null }, // No endTime
+                        { startTime: { gte: now } } // But startTime is in the future
+                    ]
+                }
+            ];
+        }
 
         // Filter by pricingType
         if (pricingType && ['FREE', 'PAID'].includes(pricingType)) {
@@ -278,9 +293,12 @@ exports.getAllEvents = async (req, res) => {
         const userClubIds = userMemberships.map(m => m.clubId);
 
         // Xử lý logic theo từng trường hợp filter type
+        // Note: We need to combine type filters with endTime filter using AND
+        const typeFilters = {};
+        
         if (normalizedType === 'INTERNAL') {
             // Filter INTERNAL: chỉ hiển thị INTERNAL events của clubs user là member
-            where.type = 'INTERNAL';
+            typeFilters.type = 'INTERNAL';
             
             // Nếu filter type=INTERNAL và có clubId nhưng user không phải member → trả về rỗng
             if (clubId && !userClubIds.includes(clubId)) {
@@ -293,34 +311,63 @@ exports.getAllEvents = async (req, res) => {
             
             if (clubId) {
                 // Có clubId: chỉ hiển thị INTERNAL của club đó (user đã là member vì đã check ở trên)
-                where.clubId = clubId;
+                typeFilters.clubId = clubId;
             } else {
                 // Không có clubId: chỉ hiển thị INTERNAL của clubs user là member
-                where.clubId = { in: userClubIds };
+                typeFilters.clubId = { in: userClubIds };
             }
         } else if (normalizedType === 'PUBLIC') {
             // Filter PUBLIC: chỉ hiển thị PUBLIC events
-            where.type = 'PUBLIC';
+            typeFilters.type = 'PUBLIC';
             if (clubId) {
-                where.clubId = clubId;
+                typeFilters.clubId = clubId;
             }
         } else {
             // Không filter type: hiển thị cả PUBLIC và INTERNAL
             if (clubId && userClubIds.includes(clubId)) {
                 // User là member của club này, hiển thị cả PUBLIC và INTERNAL của club này
-                where.clubId = clubId;
-                // Không set where.type để hiển thị cả hai
+                typeFilters.clubId = clubId;
+                // Không set typeFilters.type để hiển thị cả hai
             } else if (!clubId) {
                 // Không filter clubId: hiển thị PUBLIC hoặc INTERNAL của clubs user là member
-                where.OR = [
+                typeFilters.OR = [
                     { type: 'PUBLIC' },
                     { type: 'INTERNAL', clubId: { in: userClubIds } }
                 ];
             } else {
                 // Filter clubId nhưng user không phải member: chỉ xem PUBLIC
-                where.type = 'PUBLIC';
-                where.clubId = clubId;
+                typeFilters.type = 'PUBLIC';
+                typeFilters.clubId = clubId;
             }
+        }
+
+        // Combine all filters: endTime filter (if exists) + type/club filters + pricing filter
+        const allFilters = [];
+        
+        // Add endTime filter if exists
+        if (where.OR) {
+            allFilters.push({ OR: where.OR });
+            delete where.OR;
+        }
+        
+        // Add type/club filters
+        if (Object.keys(typeFilters).length > 0) {
+            allFilters.push(typeFilters);
+        }
+        
+        // Add other filters (pricingType, etc.)
+        Object.keys(where).forEach(key => {
+            if (where[key] !== undefined) {
+                allFilters.push({ [key]: where[key] });
+            }
+        });
+        
+        // Build final where clause
+        if (allFilters.length === 1) {
+            Object.assign(where, allFilters[0]);
+        } else if (allFilters.length > 1) {
+            Object.keys(where).forEach(key => delete where[key]);
+            where.AND = allFilters;
         }
 
         // Debug: log where clause
@@ -343,6 +390,14 @@ exports.getAllEvents = async (req, res) => {
                     select: {
                         id: true,
                         fullName: true
+                    }
+                },
+                staff: {
+                    select: {
+                        id: true,
+                        userId: true,
+                        eventId: true,
+                        createdAt: true
                     }
                 },
                 _count: {
@@ -401,6 +456,20 @@ exports.getEventDetail = async (req, res) => {
                         email: true,
                         fullName: true,
                         avatarUrl: true
+                    }
+                },
+                staff: {
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                email: true,
+                                fullName: true,
+                                studentCode: true,
+                                avatarUrl: true,
+                                phone: true
+                            }
+                        }
                     }
                 },
                 _count: {
