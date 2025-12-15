@@ -137,7 +137,7 @@ router.get('/:slug',
  *         schema:
  *           type: string
  *           example: "ACTIVE"
- *         description: Lọc theo trạng thái membership (vd ACTIVE, PENDING_PAYMENT)
+ *         description: Lọc theo trạng thái membership (vd ACTIVE, PENDING_PAYMENT). Mặc định chỉ lấy ACTIVE nếu không truyền.
  *       - in: query
  *         name: page
  *         required: false

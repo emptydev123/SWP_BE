@@ -664,7 +664,7 @@ exports.getClubDetail = async (req, res) => {
 exports.getClubMembers = async (req, res) => {
     try {
         const { clubId } = req.params;
-        const { status } = req.query; // optional: ACTIVE, PENDING_PAYMENT,...
+        const { status } = req.query; // optional: ACTIVE, PENDING_PAYMENT,... (mặc định ACTIVE)
         const userId = req.userId;
 
         // 1. Kiểm tra club tồn tại
@@ -711,9 +711,11 @@ exports.getClubMembers = async (req, res) => {
         }
 
         // 3. Lấy danh sách members với phân trang
+        // Mặc định chỉ lấy members ACTIVE, trừ khi client truyền status khác
+        const effectiveStatus = status || 'ACTIVE';
         const where = {
             clubId: clubId,
-            ...(status && { status: status })
+            status: effectiveStatus
         };
 
         const result = await paginateWithWhere(

@@ -482,16 +482,39 @@ exports.handleWebhook = async (req, res) => {
             });
 
             // Xử lý theo transaction type
-            if (transaction.type === 'MEMBERSHIP' && transaction.referenceMembershipId) {
-                // Cập nhật membership status thành ACTIVE
-                await prisma.clubMembership.update({
-                    where: { id: transaction.referenceMembershipId },
-                    data: {
-                        status: 'ACTIVE',
-                        activatedAt: new Date(),
-                        joinedAt: new Date()
+            if (transaction.type === 'MEMBERSHIP') {
+                // Tạo hoặc update membership ACTIVE cho user trong club này
+                let membership = await prisma.clubMembership.findUnique({
+                    where: {
+                        clubId_userId: {
+                            clubId: transaction.clubId,
+                            userId: transaction.userId
+                        }
                     }
                 });
+
+                if (membership) {
+                    membership = await prisma.clubMembership.update({
+                        where: { id: membership.id },
+                        data: {
+                            role: 'MEMBER',
+                            status: 'ACTIVE',
+                            activatedAt: new Date(),
+                            joinedAt: membership.joinedAt || new Date()
+                        }
+                    });
+                } else {
+                    membership = await prisma.clubMembership.create({
+                        data: {
+                            clubId: transaction.clubId,
+                            userId: transaction.userId,
+                            role: 'MEMBER',
+                            status: 'ACTIVE',
+                            joinedAt: new Date(),
+                            activatedAt: new Date()
+                        }
+                    });
+                }
 
                 // Tạo ledger entry cho club
                 const club = await prisma.club.findUnique({
@@ -513,7 +536,7 @@ exports.handleWebhook = async (req, res) => {
                             transactionId: transaction.id,
                             amount: transaction.amount,
                             balanceAfter: balanceAfter,
-                            note: `Phí gia nhập từ ${transaction.referenceMembership?.user?.email || 'N/A'}`
+                            note: `Phí gia nhập từ ${transaction.user?.email || 'N/A'}`
                         }
                     });
                 }
@@ -553,7 +576,7 @@ exports.handleWebhook = async (req, res) => {
                         if (ticket.event && ticket.event.format === 'OFFLINE' && !qrCode) {
                             qrCode = generateQRCode(ticket.eventId, ticket.id);
                         }
-                        
+
                         await prisma.ticket.update({
                             where: { id: ticket.id },
                             data: {
@@ -563,7 +586,7 @@ exports.handleWebhook = async (req, res) => {
                                 ...(qrCode && { qrCode: qrCode })
                             }
                         });
-                        
+
                         console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode || 'N/A (ONLINE event)'}`);
                     } else {
                         // Ticket đã có QR code, chỉ update status nếu cần
@@ -578,7 +601,7 @@ exports.handleWebhook = async (req, res) => {
                             console.log(`[Webhook] Updated ticket ${ticket.id} status to PAID`);
                         }
                     }
-                    
+
                     // Tạo EventRegistration nếu chưa có (chỉ tạo 1 lần cho user đầu tiên)
                     if (ticket === tickets[0]) {
                         const existingRegistration = await prisma.eventRegistration.findFirst({
@@ -587,7 +610,7 @@ exports.handleWebhook = async (req, res) => {
                                 userId: ticket.userId
                             }
                         });
-                        
+
                         if (!existingRegistration) {
                             await prisma.eventRegistration.create({
                                 data: {
@@ -1063,7 +1086,7 @@ exports.getTransaction = async (req, res) => {
 
         // Format response với payment info từ payosPayload
         const responseData = await formatTransactionWithPayment(transaction, true); // includeQRCode = true
-        
+
         // Thêm các thông tin khác
         responseData.club = transaction.club;
         responseData.user = transaction.user;
