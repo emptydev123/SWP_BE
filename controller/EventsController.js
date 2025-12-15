@@ -780,14 +780,14 @@ exports.deleteEvent = async (req, res) => {
 exports.registerEvent = async (req, res) => {
     try {
         const { eventId } = req.params;
-        const { quantity = 1, ticketType, attendees } = req.body;
+        const { quantity = 1, ticketType } = req.body;
         const userId = req.userId;
 
         // 1. Validate quantity
-        if (quantity < 1 || quantity > 4) {
+        if (quantity !== 1) {
             return res.status(400).json({
                 success: false,
-                message: 'Số lượng vé phải từ 1 đến 4'
+                message: 'Chỉ được mua 1 vé cho chính bạn'
             });
         }
 
@@ -846,12 +846,12 @@ exports.registerEvent = async (req, res) => {
             }
         }
 
-        // 5. Kiểm tra user đã có vé PAID/RESERVED/USED chưa (chỉ chặn khi đã thanh toán)
+        // 5. Kiểm tra user đã có vé chưa (chặn cả pending)
         const existingPaidTickets = await prisma.ticket.findMany({
             where: {
                 eventId: eventId,
                 userId: userId,
-                status: { in: ['PAID', 'USED'] }
+                status: { in: ['PAID', 'USED', 'RESERVED', 'INIT'] }
             }
         });
 
@@ -862,24 +862,7 @@ exports.registerEvent = async (req, res) => {
             });
         }
 
-        // 6. Validate attendees (nếu gửi vào)
-        let attendeeList = [];
-        if (attendees !== undefined) {
-            if (!Array.isArray(attendees) || attendees.length !== quantity) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Danh sách attendees phải là mảng và có số phần tử bằng quantity'
-                });
-            }
-            attendeeList = attendees.map((a, idx) => ({
-                fullName: a?.fullName || null,
-                email: a?.email || null,
-                phone: a?.phone || null,
-                idx
-            }));
-        }
-
-        // Lấy thông tin user để fallback khi thiếu attendee info
+        // Lấy thông tin user để set holder info
         const purchaser = await prisma.user.findUnique({
             where: { id: userId },
             select: {
@@ -895,10 +878,9 @@ exports.registerEvent = async (req, res) => {
             const tickets = [];
             
             for (let i = 0; i < quantity; i++) {
-                const attendeeInfo = attendeeList[i] || {};
-                const holderName = attendeeInfo.fullName || purchaser?.fullName || purchaser?.email || 'Người tham dự';
-                const holderEmail = attendeeInfo.email || purchaser?.email || null;
-                const holderPhone = attendeeInfo.phone || purchaser?.phone || null;
+                const holderName = purchaser?.fullName || purchaser?.email || 'Người tham dự';
+                const holderEmail = purchaser?.email || null;
+                const holderPhone = purchaser?.phone || null;
 
                 const ticketData = {
                     eventId: eventId,
@@ -1015,10 +997,9 @@ exports.registerEvent = async (req, res) => {
             // Tạo tickets với status RESERVED (chưa có QR code, sẽ tạo sau khi thanh toán thành công)
             const tickets = [];
             for (let i = 0; i < quantity; i++) {
-                const attendeeInfo = attendeeList[i] || {};
-                const holderName = attendeeInfo.fullName || user.fullName || user.email || 'Người tham dự';
-                const holderEmail = attendeeInfo.email || user.email || null;
-                const holderPhone = attendeeInfo.phone || user.phone || null;
+                const holderName = user.fullName || user.email || 'Người tham dự';
+                const holderEmail = user.email || null;
+                const holderPhone = user.phone || null;
 
                 const ticketData = {
                     eventId: eventId,
