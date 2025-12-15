@@ -24,6 +24,7 @@ exports.checkinByQRCode = async (req, res) => {
                 event: {
                     select: {
                         id: true,
+                        clubId: true,
                         title: true,
                         format: true,
                         startTime: true,
@@ -60,6 +61,29 @@ exports.checkinByQRCode = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'Event không tồn tại hoặc đã bị vô hiệu hóa'
+            });
+        }
+
+        // 3b. Kiểm tra quyền staff/leader/event-staff hoặc admin
+        const clubStaff = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: ticket.event.clubId,
+                userId: staffUserId,
+                status: 'ACTIVE',
+                role: { in: ['LEADER', 'STAFF'] }
+            }
+        });
+        const eventStaff = await prisma.eventStaff.findFirst({
+            where: {
+                eventId: ticket.event.id,
+                userId: staffUserId
+            }
+        });
+        const isAdmin = req.user?.auth_role === 'ADMIN';
+        if (!clubStaff && !eventStaff && !isAdmin) {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ staff/leader của event mới được check-in'
             });
         }
 
@@ -220,6 +244,7 @@ exports.checkinByEmail = async (req, res) => {
             where: { id: eventId },
             select: {
                 id: true,
+                clubId: true,
                 title: true,
                 format: true,
                 startTime: true,
@@ -235,42 +260,33 @@ exports.checkinByEmail = async (req, res) => {
             });
         }
 
-        // 3. Kiểm tra event format phải là ONLINE
-        if (event.format !== 'ONLINE') {
-            return res.status(400).json({
+        // 3. Kiểm tra quyền staff/leader/event-staff hoặc admin
+        const clubStaff = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: event.clubId,
+                userId: staffUserId,
+                status: 'ACTIVE',
+                role: { in: ['LEADER', 'STAFF'] }
+            }
+        });
+        const eventStaff = await prisma.eventStaff.findFirst({
+            where: {
+                eventId: event.id,
+                userId: staffUserId
+            }
+        });
+        const isAdmin = req.user?.auth_role === 'ADMIN';
+        if (!clubStaff && !eventStaff && !isAdmin) {
+            return res.status(403).json({
                 success: false,
-                message: 'Check-in bằng email chỉ dùng cho event ONLINE. Event này là OFFLINE, vui lòng quét QR code.'
+                message: 'Chỉ staff/leader của event mới được check-in'
             });
         }
 
-        // 4. Kiểm tra thời gian check-in (phải từ 30 phút trước khi event bắt đầu)
-        if (event.startTime) {
-            const now = new Date();
-            const startTime = new Date(event.startTime);
-            const checkinStartTime = new Date(startTime.getTime() - 30 * 60 * 1000); // 30 phút trước
-            
-            // Kiểm tra nếu thời gian hiện tại chưa đến 30 phút trước khi event bắt đầu
-            if (now < checkinStartTime) {
-                const minutesUntilCheckin = Math.ceil((checkinStartTime - now) / (1000 * 60));
-                return res.status(400).json({
-                    success: false,
-                    message: `Chưa đến thời gian check-in. Check-in sẽ mở từ ${checkinStartTime.toLocaleString('vi-VN')} (30 phút trước khi event bắt đầu). Còn ${minutesUntilCheckin} phút nữa.`
-                });
-            }
-            
-            // Kiểm tra nếu event đã kết thúc
-            if (event.endTime) {
-                const endTime = new Date(event.endTime);
-                if (now > endTime) {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Event đã kết thúc. Không thể check-in.'
-                    });
-                }
-            }
-        }
+        // 3b. Check-in bằng email có thể dùng cho cả ONLINE và OFFLINE (backup khi QR lỗi)
+        // Không cần check format nữa
 
-        // 5. Tìm user theo email
+        // 4. Tìm user theo email
         const user = await prisma.user.findUnique({
             where: { email: email },
             select: {
@@ -288,7 +304,7 @@ exports.checkinByEmail = async (req, res) => {
             });
         }
 
-        // 6. Tìm EventRegistration của user cho event này
+        // 5. Tìm EventRegistration của user cho event này
         const registration = await prisma.eventRegistration.findFirst({
             where: {
                 eventId: eventId,
@@ -313,6 +329,33 @@ exports.checkinByEmail = async (req, res) => {
                 success: false,
                 message: 'User chưa đăng ký tham gia event này'
             });
+        }
+
+        // 6. Kiểm tra thời gian check-in (phải từ 30 phút trước khi event bắt đầu)
+        if (event.startTime) {
+            const now = new Date();
+            const startTime = new Date(event.startTime);
+            const checkinStartTime = new Date(startTime.getTime() - 30 * 60 * 1000); // 30 phút trước
+            
+            // Kiểm tra nếu thời gian hiện tại chưa đến 30 phút trước khi event bắt đầu
+            if (now < checkinStartTime) {
+                const minutesUntilCheckin = Math.ceil((checkinStartTime - now) / (1000 * 60));
+                return res.status(400).json({
+                    success: false,
+                    message: `Chưa đến thời gian check-in. Check-in sẽ mở từ ${checkinStartTime.toLocaleString('vi-VN')} (30 phút trước khi event bắt đầu). Còn ${minutesUntilCheckin} phút nữa.`
+                });
+            }
+            
+            // Kiểm tra nếu event đã kết thúc
+            if (event.endTime) {
+                const endTime = new Date(event.endTime);
+                if (now > endTime) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Event đã kết thúc. Không thể check-in.'
+                    });
+                }
+            }
         }
 
         // 7. Kiểm tra đã check-in chưa
