@@ -51,19 +51,21 @@ exports.applyToClub = async (req, res) => {
             });
         }
 
-        // Kiểm tra đã có application pending chưa
+        // Kiểm tra đã có application nào chưa (PENDING hoặc APPROVED)
         const existingApplication = await prisma.clubApplication.findFirst({
             where: {
                 clubId: clubId,
                 userId: userId,
-                status: 'PENDING'
+                status: { in: ['PENDING', 'APPROVED'] }
             }
         });
 
         if (existingApplication) {
             return res.status(400).json({
                 success: false,
-                message: "Bạn đã có đơn xin tham gia đang chờ duyệt"
+                message: existingApplication.status === 'PENDING'
+                    ? "Bạn đã có đơn xin tham gia đang chờ duyệt"
+                    : "Bạn đã có đơn xin tham gia đã được duyệt trước đó"
             });
         }
 
