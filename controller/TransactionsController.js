@@ -435,17 +435,14 @@ exports.handleWebhook = async (req, res) => {
         const transaction = await prisma.transaction.findUnique({
             where: { paymentReference: orderCode.toString() },
             include: {
-                referenceMembership: {
-                    include: {
-                        user: {
-                            select: {
-                                id: true,
-                                email: true,
-                                fullName: true
-                            }
-                        }
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true
                     }
                 },
+                referenceMembership: true,
                 referenceTicket: {
                     include: {
                         event: true
@@ -483,62 +480,68 @@ exports.handleWebhook = async (req, res) => {
 
             // Xử lý theo transaction type
             if (transaction.type === 'MEMBERSHIP') {
-                // Tạo hoặc update membership ACTIVE cho user trong club này
-                let membership = await prisma.clubMembership.findUnique({
-                    where: {
-                        clubId_userId: {
+                console.log('[Webhook] Processing MEMBERSHIP - creating/updating membership for user:', transaction.userId, 'club:', transaction.clubId);
+                try {
+                    // Tạo hoặc update membership ACTIVE cho user trong club này
+                    let membership = await prisma.clubMembership.findFirst({
+                        where: {
                             clubId: transaction.clubId,
                             userId: transaction.userId
                         }
+                    });
+
+                    if (membership) {
+                        membership = await prisma.clubMembership.update({
+                            where: { id: membership.id },
+                            data: {
+                                role: 'MEMBER',
+                                status: 'ACTIVE',
+                                activatedAt: new Date(),
+                                joinedAt: membership.joinedAt || new Date()
+                            }
+                        });
+                        console.log('[Webhook] Updated existing membership to ACTIVE:', membership.id);
+                    } else {
+                        membership = await prisma.clubMembership.create({
+                            data: {
+                                clubId: transaction.clubId,
+                                userId: transaction.userId,
+                                role: 'MEMBER',
+                                status: 'ACTIVE',
+                                joinedAt: new Date(),
+                                activatedAt: new Date()
+                            }
+                        });
+                        console.log('[Webhook] Created new ACTIVE membership:', membership.id);
                     }
-                });
 
-                if (membership) {
-                    membership = await prisma.clubMembership.update({
-                        where: { id: membership.id },
-                        data: {
-                            role: 'MEMBER',
-                            status: 'ACTIVE',
-                            activatedAt: new Date(),
-                            joinedAt: membership.joinedAt || new Date()
-                        }
-                    });
-                } else {
-                    membership = await prisma.clubMembership.create({
-                        data: {
-                            clubId: transaction.clubId,
-                            userId: transaction.userId,
-                            role: 'MEMBER',
-                            status: 'ACTIVE',
-                            joinedAt: new Date(),
-                            activatedAt: new Date()
-                        }
-                    });
-                }
-
-                // Tạo ledger entry cho club
-                const club = await prisma.club.findUnique({
-                    where: { id: transaction.clubId }
-                });
-
-                if (club) {
-                    const lastLedger = await prisma.clubLedger.findFirst({
-                        where: { clubId: transaction.clubId },
-                        orderBy: { createdAt: 'desc' }
+                    // Tạo ledger entry cho club
+                    const club = await prisma.club.findUnique({
+                        where: { id: transaction.clubId }
                     });
 
-                    const balanceAfter = (lastLedger?.balanceAfter || 0) + transaction.amount;
+                    if (club) {
+                        const lastLedger = await prisma.clubLedger.findFirst({
+                            where: { clubId: transaction.clubId },
+                            orderBy: { createdAt: 'desc' }
+                        });
 
-                    await prisma.clubLedger.create({
-                        data: {
-                            clubId: transaction.clubId,
-                            type: 'INCOME',
-                            transactionId: transaction.id,
-                            amount: transaction.amount,
-                            balanceAfter: balanceAfter,
-                            note: `Phí gia nhập từ ${transaction.user?.email || 'N/A'}`
-                        }
-                    });
+                        const balanceAfter = (lastLedger?.balanceAfter || 0) + transaction.amount;
+
+                        await prisma.clubLedger.create({
+                            data: {
+                                clubId: transaction.clubId,
+                                type: 'INCOME',
+                                transactionId: transaction.id,
+                                amount: transaction.amount,
+                                balanceAfter: balanceAfter,
+                                note: `Phí gia nhập từ ${transaction.user?.email || 'N/A'}`
+                            }
+                        });
+                        console.log('[Webhook] Created club ledger entry for MEMBERSHIP payment');
+                    }
+                } catch (membershipError) {
+                    console.error('[Webhook] Error when creating/updating membership after payment:', membershipError);
                 }
             } else if (transaction.type === 'EVENT_TICKET') {
                 // Cập nhật tất cả tickets liên quan thành PAID và generate QR code
