@@ -14,8 +14,15 @@ const auth = require('../middlewares/auth');
  * @swagger
  * /api/events:
  *   get:
- *     summary: Get list of events (Public)
+ *     summary: Get list of events (Requires authentication)
  *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       - Requires login (authentication mandatory)
+ *       - Public events: visible to all authenticated users
+ *       - Internal events: only visible to club members
+ *       - Returns both PUBLIC events and INTERNAL events of clubs user is a member of
  *     parameters:
  *       - in: query
  *         name: clubId
@@ -37,15 +44,22 @@ const auth = require('../middlewares/auth');
  *     responses:
  *       200:
  *         description: List of events
+ *       401:
+ *         description: Unauthorized - Login required
  */
-router.get('/', eventsController.getAllEvents);
+router.get('/', 
+    auth.authMiddleWare,
+    eventsController.getAllEvents
+);
 
 /**
  * @swagger
  * /api/events/{eventId}:
  *   get:
- *     summary: Get event details
+ *     summary: Get event details (Requires authentication)
  *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: eventId
@@ -56,12 +70,17 @@ router.get('/', eventsController.getAllEvents);
  *     responses:
  *       200:
  *         description: Event details
+ *       401:
+ *         description: Unauthorized - Login required
  *       403:
  *         description: No permission (INTERNAL events require club membership)
  *       404:
  *         description: Event not found
  */
-router.get('/:eventId', eventsController.getEventDetail);
+router.get('/:eventId', 
+    auth.authMiddleWare,
+    eventsController.getEventDetail
+);
 
 /**
  * @swagger
@@ -138,6 +157,12 @@ router.get('/:eventId', eventsController.getEventDetail);
  *                 format: date-time
  *                 description: Event visibility start time (optional)
  *                 example: 2024-12-20T00:00:00Z
+ *               staffIds:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Array of user IDs - danh sách thành viên club làm staff quản lý event (optional)
+ *                 example: ["user-id-1", "user-id-2"]
  *     responses:
  *       201:
  *         description: Event created successfully

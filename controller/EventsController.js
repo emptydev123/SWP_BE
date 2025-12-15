@@ -23,7 +23,8 @@ exports.createEvent = async (req, res) => {
             location,       // String
             format,         // 'ONLINE' hoặc 'OFFLINE'
             onlineLink,     // String: Google Meet link (required nếu format = 'ONLINE')
-            visibleFrom     // DateTime: thời điểm event hiển thị (optional)
+            visibleFrom,    // DateTime: thời điểm event hiển thị (optional)
+            staffIds        // Array of user IDs: danh sách thành viên club làm staff quản lý event
         } = req.body;
 
         const userId = req.userId;
@@ -146,7 +147,32 @@ exports.createEvent = async (req, res) => {
             });
         }
 
-        // 9. Tạo event
+        // 9. Validate staffIds nếu có
+        if (staffIds && Array.isArray(staffIds) && staffIds.length > 0) {
+            // Kiểm tra tất cả staffIds phải là thành viên của club
+            const staffMemberships = await prisma.clubMembership.findMany({
+                where: {
+                    clubId: clubId,
+                    userId: { in: staffIds },
+                    status: 'ACTIVE'
+                },
+                select: {
+                    userId: true
+                }
+            });
+
+            const validStaffIds = staffMemberships.map(m => m.userId);
+            const invalidStaffIds = staffIds.filter(id => !validStaffIds.includes(id));
+
+            if (invalidStaffIds.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Một số thành viên không hợp lệ hoặc không phải là thành viên của CLB: ${invalidStaffIds.join(', ')}`
+                });
+            }
+        }
+
+        // 10. Tạo event
         const newEvent = await prisma.event.create({
             data: {
                 clubId: clubId,
@@ -163,7 +189,12 @@ exports.createEvent = async (req, res) => {
                 format: eventFormat,
                 onlineLink: eventFormat === 'ONLINE' ? (onlineLink ? onlineLink.trim() : null) : null,
                 visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
-                isActive: true
+                isActive: true,
+                staff: staffIds && Array.isArray(staffIds) && staffIds.length > 0 ? {
+                    create: staffIds.map(staffId => ({
+                        userId: staffId
+                    }))
+                } : undefined
             },
             include: {
                 club: {
@@ -178,6 +209,18 @@ exports.createEvent = async (req, res) => {
                         id: true,
                         email: true,
                         fullName: true
+                    }
+                },
+                staff: {
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                email: true,
+                                fullName: true,
+                                studentCode: true
+                            }
+                        }
                     }
                 }
             }
@@ -199,14 +242,14 @@ exports.createEvent = async (req, res) => {
 };
 
 /**
- * Lấy danh sách events
- * - Public events: ai cũng xem được
+ * Lấy danh sách events (Bắt buộc đăng nhập)
+ * - Public events: tất cả user đã login đều xem được
  * - Internal events: chỉ members của club mới xem được
  */
 exports.getAllEvents = async (req, res) => {
     try {
         const { clubId, type, pricingType } = req.query;
-        const userId = req.userId; // Có thể null nếu chưa đăng nhập
+        const userId = req.userId; // Luôn có giá trị vì đã bắt buộc login
 
         // Normalize type to uppercase
         const normalizedType = type ? type.toUpperCase() : null;
@@ -221,81 +264,62 @@ exports.getAllEvents = async (req, res) => {
             where.pricingType = pricingType;
         }
 
-        // Nếu user đã đăng nhập, có thể xem INTERNAL events của clubs họ là member
-        // Nếu chưa đăng nhập, chỉ xem PUBLIC events
-        if (!userId) {
-            // User chưa đăng nhập
-            if (normalizedType === 'INTERNAL') {
-                // Nếu filter INTERNAL nhưng chưa đăng nhập → trả về rỗng
+        // Lấy danh sách clubIds mà user là member
+        const userMemberships = await prisma.clubMembership.findMany({
+            where: {
+                userId: userId,
+                status: 'ACTIVE'
+            },
+            select: {
+                clubId: true
+            }
+        });
+
+        const userClubIds = userMemberships.map(m => m.clubId);
+
+        // Xử lý logic theo từng trường hợp filter type
+        if (normalizedType === 'INTERNAL') {
+            // Filter INTERNAL: chỉ hiển thị INTERNAL events của clubs user là member
+            where.type = 'INTERNAL';
+            
+            // Nếu filter type=INTERNAL và có clubId nhưng user không phải member → trả về rỗng
+            if (clubId && !userClubIds.includes(clubId)) {
                 return res.status(200).json({
                     success: true,
                     count: 0,
                     data: []
                 });
             }
-            // Chỉ xem PUBLIC events
+            
+            if (clubId) {
+                // Có clubId: chỉ hiển thị INTERNAL của club đó (user đã là member vì đã check ở trên)
+                where.clubId = clubId;
+            } else {
+                // Không có clubId: chỉ hiển thị INTERNAL của clubs user là member
+                where.clubId = { in: userClubIds };
+            }
+        } else if (normalizedType === 'PUBLIC') {
+            // Filter PUBLIC: chỉ hiển thị PUBLIC events
             where.type = 'PUBLIC';
             if (clubId) {
                 where.clubId = clubId;
             }
         } else {
-            // Nếu có userId, lấy danh sách clubIds mà user là member
-            const userMemberships = await prisma.clubMembership.findMany({
-                where: {
-                    userId: userId,
-                    status: 'ACTIVE'
-                },
-                select: {
-                    clubId: true
-                }
-            });
-
-            const userClubIds = userMemberships.map(m => m.clubId);
-
-            // Xử lý logic theo từng trường hợp filter type
-            if (normalizedType === 'INTERNAL') {
-                // Filter INTERNAL: chỉ hiển thị INTERNAL events
-                where.type = 'INTERNAL';
-                
-                // Nếu filter type=INTERNAL và có clubId nhưng user không phải member → trả về rỗng
-                if (clubId && !userClubIds.includes(clubId)) {
-                    return res.status(200).json({
-                        success: true,
-                        count: 0,
-                        data: []
-                    });
-                }
-                
-                if (clubId) {
-                    // Có clubId: chỉ hiển thị INTERNAL của club đó (user đã là member vì đã check ở trên)
-                    where.clubId = clubId;
-                } else {
-                    // Không có clubId: chỉ hiển thị INTERNAL của clubs user là member
-                    where.clubId = { in: userClubIds };
-                }
-            } else if (normalizedType === 'PUBLIC') {
-                // Filter PUBLIC: chỉ hiển thị PUBLIC events
-                where.type = 'PUBLIC';
-                if (clubId) {
-                    where.clubId = clubId;
-                }
+            // Không filter type: hiển thị cả PUBLIC và INTERNAL
+            if (clubId && userClubIds.includes(clubId)) {
+                // User là member của club này, hiển thị cả PUBLIC và INTERNAL của club này
+                where.clubId = clubId;
+                // Không set where.type để hiển thị cả hai
+            } else if (!clubId) {
+                // Không filter clubId: hiển thị PUBLIC hoặc INTERNAL của clubs user là member
+                where.OR = [
+                    { type: 'PUBLIC' },
+                    { type: 'INTERNAL', clubId: { in: userClubIds } }
+                ];
             } else {
-                // Không filter type: hiển thị cả PUBLIC và INTERNAL
-                if (clubId && userClubIds.includes(clubId)) {
-                    // User là member của club này, hiển thị cả PUBLIC và INTERNAL của club này
-                    where.clubId = clubId;
-                    // Không set where.type để hiển thị cả hai
-                } else if (!clubId) {
-                    // Không filter clubId: hiển thị PUBLIC hoặc INTERNAL của clubs user là member
-                    where.OR = [
-                        { type: 'PUBLIC' },
-                        { type: 'INTERNAL', clubId: { in: userClubIds } }
-                    ];
-                } else {
-                    // Filter clubId nhưng user không phải member: chỉ xem PUBLIC
-                    where.type = 'PUBLIC';
-                    where.clubId = clubId;
-                }
+                // Filter clubId nhưng user không phải member: chỉ xem PUBLIC
+                where.type = 'PUBLIC';
+                where.clubId = clubId;
             }
         }
 
@@ -399,14 +423,8 @@ exports.getEventDetail = async (req, res) => {
         }
 
         // Check permission: INTERNAL events chỉ members mới xem được
+        // userId luôn có giá trị vì đã bắt buộc login
         if (event.type === 'INTERNAL') {
-            if (!userId) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Cần đăng nhập để xem event này'
-                });
-            }
-
             // Check if user is member of the club
             const membership = await prisma.clubMembership.findFirst({
                 where: {
@@ -416,7 +434,7 @@ exports.getEventDetail = async (req, res) => {
                 }
             });
 
-            if (!membership && req.user?.role !== 'ADMIN') {
+            if (!membership && req.user?.auth_role !== 'ADMIN') {
                 return res.status(403).json({
                     success: false,
                     message: 'Chỉ thành viên của CLB mới xem được event này'

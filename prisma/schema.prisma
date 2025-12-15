@@ -37,6 +37,7 @@ model User {
   tickets              Ticket[]
   transactions         Transaction[]
   eventRegistrations   EventRegistration[]
+  eventStaff            EventStaff[]
 
   @@map("users")
 }
@@ -147,6 +148,7 @@ model Event {
   feedbacks    Feedback[]
   fundRequests FundRequest[]
   tickets      Ticket[]
+  staff        EventStaff[]
 
   @@map("events")
 }
@@ -275,6 +277,18 @@ model EventRegistration {
 
   @@unique([eventId, userId])
   @@map("event_registrations")
+}
+
+model EventStaff {
+  id        String   @id @default(uuid())
+  eventId   String   @map("event_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, userId])
+  @@map("event_staff")
 }
 
 model Feedback {

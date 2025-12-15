@@ -48,7 +48,7 @@ router.post('/qr',
  * @swagger
  * /api/checkin/email:
  *   post:
- *     summary: Check-in by email (for ONLINE events)
+ *     summary: Check-in by email (for ONLINE events, or backup for OFFLINE events when QR code fails)
  *     tags: [Check-in]
  *     security:
  *       - bearerAuth: []
