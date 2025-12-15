@@ -164,7 +164,7 @@ model Ticket {
   assignedAt         DateTime?          @map("assigned_at")
   usedAt             DateTime?          @map("used_at")
   createdAt          DateTime           @default(now()) @map("created_at")
-  online_link        String?
+  onlineLink         String?            @map("online_link")
   checkins           Checkin[]
   registration       EventRegistration? @relation("EventRegistrationTicket")
   event              Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
