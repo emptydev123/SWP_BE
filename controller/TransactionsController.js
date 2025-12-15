@@ -553,7 +553,7 @@ exports.handleWebhook = async (req, res) => {
                         if (ticket.event && ticket.event.format === 'OFFLINE' && !qrCode) {
                             qrCode = generateQRCode(ticket.eventId, ticket.id);
                         }
-                        
+
                         await prisma.ticket.update({
                             where: { id: ticket.id },
                             data: {
@@ -563,7 +563,7 @@ exports.handleWebhook = async (req, res) => {
                                 ...(qrCode && { qrCode: qrCode })
                             }
                         });
-                        
+
                         console.log(`[Webhook] Updated ticket ${ticket.id} with QR code: ${qrCode || 'N/A (ONLINE event)'}`);
                     } else {
                         // Ticket đã có QR code, chỉ update status nếu cần
@@ -578,7 +578,7 @@ exports.handleWebhook = async (req, res) => {
                             console.log(`[Webhook] Updated ticket ${ticket.id} status to PAID`);
                         }
                     }
-                    
+
                     // Tạo EventRegistration nếu chưa có (chỉ tạo 1 lần cho user đầu tiên)
                     if (ticket === tickets[0]) {
                         const existingRegistration = await prisma.eventRegistration.findFirst({
@@ -587,7 +587,7 @@ exports.handleWebhook = async (req, res) => {
                                 userId: ticket.userId
                             }
                         });
-                        
+
                         if (!existingRegistration) {
                             await prisma.eventRegistration.create({
                                 data: {
@@ -1063,7 +1063,7 @@ exports.getTransaction = async (req, res) => {
 
         // Format response với payment info từ payosPayload
         const responseData = await formatTransactionWithPayment(transaction, true); // includeQRCode = true
-        
+
         // Thêm các thông tin khác
         responseData.club = transaction.club;
         responseData.user = transaction.user;
