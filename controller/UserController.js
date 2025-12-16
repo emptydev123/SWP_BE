@@ -82,12 +82,7 @@ exports.login = async (req, res) => {
             })
         }
 
-        // Cập nhật loginProvider = 'email' để đánh dấu user đã login bằng email/password
-        await prisma.user.update({
-            where: { id: user.id },
-            data: { loginProvider: 'email' }
-        });
-
+        // Ghi nhận đăng nhập email: schema hiện không có trường loginProvider nên bỏ cập nhật
         const accessToken = jwt.sign({
             userId: user.id,
             email: user.email,
@@ -101,8 +96,8 @@ exports.login = async (req, res) => {
                 id: user.id,
                 email: user.email,
                 fullName: user.fullName,
-                role: user.auth_role, // Use auth_role field from schema
-                loginProvider: 'email'
+                role: user.auth_role // Use auth_role field from schema
+                // loginProvider removed - field does not exist in schema
             }
         })
     } catch (error) {
@@ -117,8 +112,15 @@ exports.login = async (req, res) => {
 // GET PROFILE
 exports.getProfileUser = async (req, res) => {
     try {
+        // Ensure we have a valid identifier from auth middleware
+        const userId = req.userId;
+        const userEmail = req.user?.email;
+        if (!userId && !userEmail) {
+            return res.status(401).json({ message: "Unauthorized", success: false });
+        }
+
         const user = await prisma.user.findUnique({
-            where: { id: req.userId },
+            where: userId ? { id: userId } : { email: userEmail },
             select: {
                 id: true,
                 email: true,
@@ -127,7 +129,6 @@ exports.getProfileUser = async (req, res) => {
                 studentCode: true,
                 auth_role: true, // Use auth_role field from schema
                 avatarUrl: true,
-                loginProvider: true, // Thêm loginProvider để biết user login bằng cách nào
                 createdAt: true,
                 updatedAt: true,
                 // Include memberships to see roles in clubs
@@ -250,11 +251,8 @@ exports.loginWithGoogle = async (req, res) => {
             });
         }
 
-        // Cập nhật loginProvider = 'google' để đánh dấu user đã login bằng Google
-        await prisma.user.update({
-            where: { id: user.id },
-            data: { loginProvider: 'google' }
-        });
+        // Ghi nhận đăng nhập Google: schema hiện không có trường loginProvider nên bỏ cập nhật
+        // Nếu cần lưu, hãy thêm trường vào Prisma schema và migrate trước khi cập nhật.
 
         // Tạo JWT token (giống như login thông thường, nhưng không cần verify password)
         const accessToken = jwt.sign({
@@ -271,7 +269,7 @@ exports.loginWithGoogle = async (req, res) => {
                 email: user.email,
                 fullName: user.fullName,
                 role: user.auth_role,
-                loginProvider: 'google'
+                // loginProvider: 'google'
             }
         });
     } catch (error) {
