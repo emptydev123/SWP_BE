@@ -1,24 +1,25 @@
 const prisma = require('../prisma/client');
 
 /**
- * Job: Tự động cancel các transaction PENDING quá 5 phút
+ * Job: Tự động cancel các transaction PENDING quá 15 phút
  * Chạy mỗi 1 phút để kiểm tra
  */
 async function cancelExpiredTransactions() {
     try {
-        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000); // 5 phút trước
+        const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000); // 15 phút trước
 
-        // Tìm tất cả transaction PENDING được tạo trước 5 phút
+        // Tìm tất cả transaction PENDING được tạo trước 15 phút (MEMBERSHIP & EVENT_TICKET)
         const expiredTransactions = await prisma.transaction.findMany({
             where: {
                 status: 'PENDING',
-                type: 'MEMBERSHIP',
+                type: { in: ['MEMBERSHIP', 'EVENT_TICKET'] },
                 createdAt: {
-                    lt: fiveMinutesAgo
+                    lt: fifteenMinutesAgo
                 }
             },
             include: {
-                referenceMembership: true
+                referenceMembership: true,
+                tickets: true
             }
         });
 
@@ -41,13 +42,20 @@ async function cancelExpiredTransactions() {
                         }
                     });
 
-                    // 2. Nếu có membership PENDING_PAYMENT, có thể update status hoặc giữ nguyên
-                    // (Tùy business logic: có thể giữ PENDING_PAYMENT để user có thể tạo transaction mới)
-                    if (transaction.referenceMembershipId && transaction.referenceMembership) {
-                        // Option 1: Giữ nguyên status PENDING_PAYMENT (user có thể tạo transaction mới)
-                        // Option 2: Update membership status = INACTIVE (nếu muốn)
-                        // Hiện tại giữ nguyên để user có thể tạo transaction mới
+                    // 2. Nếu có tickets ở trạng thái RESERVED/INIT, hủy chúng
+                    if (transaction.type === 'EVENT_TICKET' && transaction.tickets?.length) {
+                        await tx.ticket.updateMany({
+                            where: {
+                                id: { in: transaction.tickets.map(t => t.id) },
+                                status: { in: ['RESERVED', 'INIT'] }
+                            },
+                            data: {
+                                status: 'CANCELLED'
+                            }
+                        });
                     }
+
+                    // 3. Membership giữ nguyên PENDING_PAYMENT để user tạo giao dịch mới nếu cần
                 });
 
                 console.log(`[Cancel Expired Transactions] Đã cancel transaction ${transaction.id}`);

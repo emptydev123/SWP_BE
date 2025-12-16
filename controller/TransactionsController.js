@@ -163,6 +163,7 @@ async function handleMembershipPayment(req, res, clubId, userId) {
             buyerName: membership.user.fullName || membership.user.email,
             buyerEmail: membership.user.email,
             buyerPhone: membership.user.phone || '',
+            expireMinutes: 15,
             items: [
                 {
                     name: `Phí gia nhập CLB ${membership.club.name}`,
@@ -328,6 +329,7 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
             buyerName: user.fullName || user.email,
             buyerEmail: user.email,
             buyerPhone: user.phone || '',
+            expireMinutes: 15,
             items: [
                 {
                     name: `Vé ${event.title}${ticketType ? ` - ${ticketType}` : ''}`,
@@ -810,19 +812,10 @@ exports.handleReturn = async (req, res) => {
                         }
                     }
 
-                    // Trả về response với QR codes hoặc onlineLink
-                    return res.status(200).json({
-                        success: true,
-                        message: 'Thanh toán thành công',
-                        data: {
-                            transactionId: transaction.id,
-                            status: 'SUCCESS',
-                            orderCode: orderCode,
-                            amount: transaction.amount,
-                            tickets: updatedTickets,
-                            eventTitle: tickets[0]?.event?.title || null
-                        }
-                    });
+                    // Redirect về FE với kết quả thành công
+                    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+                    const redirectUrl = `${frontendUrl}/payment/result?status=SUCCESS&orderCode=${encodeURIComponent(orderCode)}&transactionId=${encodeURIComponent(transaction.id)}`;
+                    return res.redirect(302, redirectUrl);
                 }
             }
         } catch (payosError) {
@@ -830,49 +823,17 @@ exports.handleReturn = async (req, res) => {
             // Nếu không query được PayOS, vẫn trả về thông tin transaction hiện tại
         }
 
-        // Nếu transaction đã SUCCESS, lấy tickets và QR codes
-        if (transaction.status === 'SUCCESS' && transaction.type === 'EVENT_TICKET') {
-            const tickets = await prisma.ticket.findMany({
-                where: {
-                    transactionId: transaction.id
-                },
-                include: {
-                    event: true
-                }
-            });
-
-            const ticketsWithQR = tickets.map(ticket => ({
-                id: ticket.id,
-                qrCode: ticket.qrCode,
-                ticketType: ticket.ticketType,
-                status: ticket.status
-            }));
-
-            return res.status(200).json({
-                success: true,
-                message: 'Thanh toán thành công',
-                data: {
-                    transactionId: transaction.id,
-                    status: transaction.status,
-                    orderCode: orderCode,
-                    amount: transaction.amount,
-                    tickets: ticketsWithQR,
-                    eventTitle: tickets[0]?.event?.title || null
-                }
-            });
-        }
-
-        // Trường hợp khác (MEMBERSHIP hoặc chưa thanh toán)
-        res.status(200).json({
-            success: true,
-            message: transaction.status === 'SUCCESS' ? 'Thanh toán thành công' : 'Đang xử lý thanh toán',
-            data: {
-                transactionId: transaction.id,
-                status: transaction.status,
-                orderCode: orderCode,
-                amount: transaction.amount
-            }
-        });
+        // Redirect cho các trường hợp còn lại
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        const finalStatus = transaction.status === 'SUCCESS'
+            ? 'SUCCESS'
+            : status === 'CANCELLED' || transaction.status === 'CANCELLED'
+                ? 'CANCELLED'
+                : transaction.status === 'FAILED'
+                    ? 'FAILED'
+                    : 'PENDING';
+        const redirectUrl = `${frontendUrl}/payment/result?status=${finalStatus}&orderCode=${encodeURIComponent(orderCode)}&transactionId=${encodeURIComponent(transaction.id)}`;
+        return res.redirect(302, redirectUrl);
 
     } catch (error) {
         console.error('Handle Return Error:', error);
@@ -924,14 +885,10 @@ exports.handleCancel = async (req, res) => {
             }
         }
 
-        res.status(200).json({
-            success: true,
-            message: 'Đã hủy thanh toán',
-            data: {
-                transactionId: transaction?.id,
-                orderCode: orderCode
-            }
-        });
+        // Redirect về FE với trạng thái cancel
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const redirectUrl = `${frontendUrl}/payment/result?status=CANCELLED&orderCode=${encodeURIComponent(orderCode)}&transactionId=${encodeURIComponent(transaction?.id || '')}`;
+        return res.redirect(302, redirectUrl);
 
     } catch (error) {
         console.error('Handle Cancel Error:', error);
