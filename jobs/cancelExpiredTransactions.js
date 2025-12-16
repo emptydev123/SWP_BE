@@ -1,21 +1,41 @@
 const prisma = require('../prisma/client');
 
 /**
- * Job: Tự động cancel các transaction PENDING quá 15 phút
+ * Job: Tự động đánh FAILED các transaction PENDING đã hết hạn
+ * - Ưu tiên dùng field time_out (lấy từ PayOS expiredAt)
+ * - Fallback: createdAt quá 5 phút (cho các transaction cũ chưa có time_out)
  * Chạy mỗi 1 phút để kiểm tra
  */
 async function cancelExpiredTransactions() {
     try {
-        const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000); // 15 phút trước
+        const now = new Date();
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000); // 5 phút trước (fallback)
 
-        // Tìm tất cả transaction PENDING được tạo trước 15 phút (MEMBERSHIP & EVENT_TICKET)
+        // Tìm tất cả transaction PENDING đã hết hạn (MEMBERSHIP & EVENT_TICKET)
         const expiredTransactions = await prisma.transaction.findMany({
             where: {
                 status: 'PENDING',
                 type: { in: ['MEMBERSHIP', 'EVENT_TICKET'] },
-                createdAt: {
-                    lt: fifteenMinutesAgo
-                }
+                OR: [
+                    // Case 1: Có time_out và đã quá hạn
+                    {
+                        time_out: {
+                            not: null,
+                            lt: now
+                        }
+                    },
+                    // Case 2: Không có time_out (transaction cũ) → dùng createdAt > 5 phút
+                    {
+                        AND: [
+                            { time_out: null },
+                            {
+                                createdAt: {
+                                    lt: fiveMinutesAgo
+                                }
+                            }
+                        ]
+                    }
+                ]
             },
             include: {
                 referenceMembership: true,
@@ -33,12 +53,19 @@ async function cancelExpiredTransactions() {
         // Cancel từng transaction
         for (const transaction of expiredTransactions) {
             try {
+                console.log('[Cancel Expired Transactions] Xử lý transaction hết hạn', {
+                    id: transaction.id,
+                    type: transaction.type,
+                    createdAt: transaction.createdAt,
+                    time_out: transaction.time_out
+                });
+
                 await prisma.$transaction(async (tx) => {
-                    // 1. Update transaction status = CANCELLED
+                    // 1. Update transaction status = FAILED (do hết hạn, user không thanh toán)
                     await tx.transaction.update({
                         where: { id: transaction.id },
                         data: {
-                            status: 'CANCELLED'
+                            status: 'FAILED'
                         }
                     });
 

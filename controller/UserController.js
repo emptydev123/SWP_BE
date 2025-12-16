@@ -82,6 +82,12 @@ exports.login = async (req, res) => {
             })
         }
 
+        // Cập nhật loginProvider = 'email' để đánh dấu user đã login bằng email/password
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { loginProvider: 'email' }
+        });
+
         const accessToken = jwt.sign({
             userId: user.id,
             email: user.email,
@@ -95,7 +101,8 @@ exports.login = async (req, res) => {
                 id: user.id,
                 email: user.email,
                 fullName: user.fullName,
-                role: user.auth_role // Use auth_role field from schema
+                role: user.auth_role, // Use auth_role field from schema
+                loginProvider: 'email'
             }
         })
     } catch (error) {
@@ -120,6 +127,7 @@ exports.getProfileUser = async (req, res) => {
                 studentCode: true,
                 auth_role: true, // Use auth_role field from schema
                 avatarUrl: true,
+                loginProvider: true, // Thêm loginProvider để biết user login bằng cách nào
                 createdAt: true,
                 updatedAt: true,
                 // Include memberships to see roles in clubs
@@ -206,6 +214,71 @@ exports.updateProfileUser = async (req, res) => {
         return res.status(500).json({
             success: false,
             message: error.message || "Internal Server Error"
+        });
+    }
+};
+
+// LOGIN WITH GOOGLE
+// User đã login với Google qua Supabase, FE gửi email lên để BE tạo JWT token
+exports.loginWithGoogle = async (req, res) => {
+    const secretKey = process.env.SECRET_KEY;
+    const { email } = req.body;
+
+    try {
+        if (!email) {
+            return res.status(400).json({
+                message: "Email is required",
+                success: false
+            });
+        }
+
+        // Tìm user trong DB theo email
+        const user = await prisma.user.findUnique({ where: { email } });
+
+        if (!user) {
+            return res.status(404).json({
+                message: "Email chưa được đăng ký trong hệ thống. Vui lòng đăng ký trước.",
+                success: false
+            });
+        }
+
+        // Kiểm tra user có active không
+        if (!user.isActive) {
+            return res.status(403).json({
+                message: "Tài khoản đã bị vô hiệu hóa",
+                success: false
+            });
+        }
+
+        // Cập nhật loginProvider = 'google' để đánh dấu user đã login bằng Google
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { loginProvider: 'google' }
+        });
+
+        // Tạo JWT token (giống như login thông thường, nhưng không cần verify password)
+        const accessToken = jwt.sign({
+            userId: user.id,
+            email: user.email,
+            role: user.auth_role
+        }, secretKey, { expiresIn: '1h' });
+
+        res.status(200).json({
+            success: true,
+            accessToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                fullName: user.fullName,
+                role: user.auth_role,
+                loginProvider: 'google'
+            }
+        });
+    } catch (error) {
+        console.error('Login with Google Error:', error);
+        res.status(500).json({
+            message: error.message || "Internal Server Error",
+            success: false
         });
     }
 };

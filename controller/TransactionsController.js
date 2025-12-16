@@ -3,6 +3,157 @@ const payosService = require('../services/payosService');
 const { generateQRCode } = require('../utils/ticketUtils');
 const QRCode = require('qrcode');
 const { formatTransactionWithPayment, getPaymentInfo } = require('../utils/paymentUtils');
+const { sendWelcomeToClubEmail } = require('../services/emailService');
+
+/**
+ * Đảm bảo transaction MEMBERSHIP đã SUCCESS thì phải có bản ghi clubMembership ACTIVE.
+ * Dùng tại webhook/return và có thể tái sử dụng làm fallback.
+ */
+async function ensureMembershipForTransaction(transaction) {
+    // Chỉ xử lý membership cho transaction type MEMBERSHIP đã SUCCESS
+    console.log('[ensureMembership] Start', {
+        txId: transaction?.id,
+        type: transaction?.type,
+        status: transaction?.status,
+        clubId: transaction?.clubId,
+        userId: transaction?.userId
+    });
+
+    if (!transaction || transaction.type !== 'MEMBERSHIP' || transaction.status !== 'SUCCESS') {
+        console.log('[ensureMembership] Skip - not membership or not success');
+        return null;
+    }
+
+    if (!transaction.clubId || !transaction.userId) {
+        console.error('[ensureMembership] Missing clubId or userId on transaction', {
+            txId: transaction.id,
+            clubId: transaction.clubId,
+            userId: transaction.userId
+        });
+        return null;
+    }
+
+    // Tìm application gần nhất đã duyệt để lấy assignedById (leader)
+    const clubApplication = await prisma.clubApplication.findFirst({
+        where: {
+            clubId: transaction.clubId,
+            userId: transaction.userId,
+            status: 'APPROVED'
+        },
+        orderBy: { reviewedAt: 'desc' }
+    });
+
+    // Kiểm tra membership hiện có
+    let membership = await prisma.clubMembership.findUnique({
+        where: {
+            clubId_userId: {
+                clubId: transaction.clubId,
+                userId: transaction.userId
+            }
+        }
+    });
+
+    console.log('[ensureMembership] Existing membership', membership ? {
+        id: membership.id,
+        status: membership.status
+    } : 'none');
+
+    let shouldSendWelcome = false;
+
+    // Nếu chưa có -> tạo mới
+    if (!membership) {
+        const assignedById = clubApplication?.reviewedById || transaction.club?.leaderUserId || null;
+        console.log('[ensureMembership] Creating membership', {
+            clubId: transaction.clubId,
+            userId: transaction.userId,
+            assignedById
+        });
+        membership = await prisma.clubMembership.create({
+            data: {
+                clubId: transaction.clubId,
+                userId: transaction.userId,
+                role: 'MEMBER',
+                status: 'ACTIVE',
+                assignedById: assignedById,
+                activatedAt: new Date(),
+                joinedAt: new Date()
+            }
+        });
+        console.log('[ensureMembership] ✅ Created', { membershipId: membership.id });
+        shouldSendWelcome = true;
+
+        // Gắn referenceMembershipId vào transaction nếu còn thiếu
+        if (!transaction.referenceMembershipId) {
+            await prisma.transaction.update({
+                where: { id: transaction.id },
+                data: { referenceMembershipId: membership.id }
+            });
+            console.log('[ensureMembership] Updated transaction with referenceMembershipId', {
+                txId: transaction.id,
+                membershipId: membership.id
+            });
+        }
+        // không return ở đây để còn chạy phần gửi email bên dưới
+    } else if (membership.status !== 'ACTIVE') {
+        // Nếu đã có nhưng chưa ACTIVE thì cập nhật
+        console.log('[ensureMembership] Updating membership to ACTIVE', { membershipId: membership.id });
+        membership = await prisma.clubMembership.update({
+            where: { id: membership.id },
+            data: {
+                status: 'ACTIVE',
+                activatedAt: new Date(),
+                joinedAt: membership.joinedAt || new Date()
+            }
+        });
+        shouldSendWelcome = true;
+    }
+
+    // Đảm bảo referenceMembershipId đã set
+    if (!transaction.referenceMembershipId) {
+        await prisma.transaction.update({
+            where: { id: transaction.id },
+            data: { referenceMembershipId: membership.id }
+        });
+        console.log('[ensureMembership] Patched transaction referenceMembershipId', {
+            txId: transaction.id,
+            membershipId: membership.id
+        });
+    }
+
+    // Gửi email welcome sau khi membership thực sự ACTIVE (chỉ gửi khi mới tạo / mới active)
+    if (shouldSendWelcome) {
+        try {
+            const [club, user] = await Promise.all([
+                prisma.club.findUnique({
+                    where: { id: transaction.clubId },
+                    select: { name: true }
+                }),
+                prisma.user.findUnique({
+                    where: { id: transaction.userId },
+                    select: { email: true }
+                })
+            ]);
+
+            if (club && user && user.email) {
+                console.log('[ensureMembership] Sending welcome email', {
+                    email: user.email,
+                    clubName: club.name
+                });
+                await sendWelcomeToClubEmail(user.email, club.name, null, false);
+            } else {
+                console.warn('[ensureMembership] Skip welcome email - missing club/user info', {
+                    club: !!club,
+                    user: !!user,
+                    email: user?.email
+                });
+            }
+        } catch (emailErr) {
+            console.error('[ensureMembership] Error sending welcome email:', emailErr);
+        }
+    }
+
+    return membership;
+}
 
 /**
  * Create payment link for MEMBERSHIP or EVENT_TICKET
@@ -437,6 +588,19 @@ exports.handleWebhook = async (req, res) => {
         const transaction = await prisma.transaction.findUnique({
             where: { paymentReference: orderCode.toString() },
             include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true
+                    }
+                },
+                club: {
+                    select: {
+                        id: true,
+                        leaderUserId: true
+                    }
+                },
                 referenceMembership: {
                     include: {
                         user: {
@@ -464,10 +628,12 @@ exports.handleWebhook = async (req, res) => {
             });
         }
 
-        console.log(`[Webhook] Found transaction ${transaction.id}, type: ${transaction.type}, current status: ${transaction.status}`);
+        console.log(`[Webhook] Found transaction ${transaction.id}, type: ${transaction.type}, current status: ${transaction.status}, clubId: ${transaction.clubId}, userId: ${transaction.userId}`);
 
         // 3. Xử lý theo code từ PayOS
         // Code = 00: Thanh toán thành công
+        console.log(`[Webhook] Checking conditions - code: "${code}", data.status: "${data?.status}", code === '00': ${code === '00'}, data?.status === 'PAID': ${data?.status === 'PAID'}`);
+
         if (code === '00' && data?.status === 'PAID') {
             console.log(`[Webhook] Processing successful payment for transaction ${transaction.id}`);
             // Cập nhật transaction status
@@ -483,21 +649,28 @@ exports.handleWebhook = async (req, res) => {
                 }
             });
 
+            // Cập nhật object transaction trong bộ nhớ để dùng cho ensureMembership
+            transaction.status = 'SUCCESS';
+            transaction.confirmedAt = new Date();
+
             // Xử lý theo transaction type
-            if (transaction.type === 'MEMBERSHIP' && transaction.referenceMembershipId) {
-                // Cập nhật membership status thành ACTIVE
-                await prisma.clubMembership.update({
-                    where: { id: transaction.referenceMembershipId },
-                    data: {
-                        status: 'ACTIVE',
-                        activatedAt: new Date(),
-                        joinedAt: new Date()
-                    }
-                });
+            if (transaction.type === 'MEMBERSHIP') {
+                console.log(`[Webhook] Processing MEMBERSHIP transaction for club ${transaction.clubId}, user ${transaction.userId}`);
+                try {
+                    await ensureMembershipForTransaction(transaction);
+                } catch (membershipError) {
+                    console.error(`[Webhook] ❌ Error processing membership for transaction ${transaction.id}:`, membershipError);
+                    // Không throw để không block việc tạo ledger
+                }
 
                 // Tạo ledger entry cho club
                 const club = await prisma.club.findUnique({
-                    where: { id: transaction.clubId }
+                    where: { id: transaction.clubId },
+                    include: {
+                        leader: {
+                            select: { email: true }
+                        }
+                    }
                 });
 
                 if (club) {
@@ -515,7 +688,7 @@ exports.handleWebhook = async (req, res) => {
                             transactionId: transaction.id,
                             amount: transaction.amount,
                             balanceAfter: balanceAfter,
-                            note: `Phí gia nhập từ ${transaction.referenceMembership?.user?.email || 'N/A'}`
+                            note: `Phí gia nhập từ ${transaction.user?.email || 'N/A'}`
                         }
                     });
                 }
@@ -638,6 +811,7 @@ exports.handleWebhook = async (req, res) => {
         }
         // Code khác: Thanh toán thất bại hoặc hủy
         else if (code !== '00' || data?.status === 'CANCELLED') {
+            console.log(`[Webhook] Payment failed/cancelled - code: ${code}, status: ${data?.status}`);
             await prisma.transaction.update({
                 where: { id: transaction.id },
                 data: {
@@ -666,6 +840,68 @@ exports.handleWebhook = async (req, res) => {
                 success: true,
                 message: 'Webhook processed - Payment failed/cancelled'
             });
+        }
+        // Trường hợp khác - không match điều kiện SUCCESS hoặc FAILED
+        else {
+            console.log(`[Webhook] ⚠️ Unknown webhook condition - code: ${code}, status: ${data?.status}, transaction type: ${transaction.type}`);
+            // Nếu transaction type là MEMBERSHIP và status chưa SUCCESS, thử xử lý membership
+            if (transaction.type === 'MEMBERSHIP' && transaction.status !== 'SUCCESS') {
+                console.log(`[Webhook] Attempting to process MEMBERSHIP transaction despite unknown condition`);
+                try {
+                    // Kiểm tra lại status từ PayOS
+                    const paymentInfo = await payosService.getPaymentInfo(parseInt(orderCode));
+                    const payosStatus = paymentInfo.data?.status;
+                    console.log(`[Webhook] PayOS status check: ${payosStatus}`);
+
+                    if (payosStatus === 'PAID') {
+                        // Cập nhật transaction status
+                        await prisma.transaction.update({
+                            where: { id: transaction.id },
+                            data: {
+                                status: 'SUCCESS',
+                                confirmedAt: new Date()
+                            }
+                        });
+
+                        // Xử lý membership tương tự như nhánh SUCCESS
+                        const clubApplication = await prisma.clubApplication.findFirst({
+                            where: {
+                                clubId: transaction.clubId,
+                                userId: transaction.userId,
+                                status: 'APPROVED'
+                            },
+                            orderBy: { reviewedAt: 'desc' }
+                        });
+
+                        let membership = await prisma.clubMembership.findUnique({
+                            where: {
+                                clubId_userId: {
+                                    clubId: transaction.clubId,
+                                    userId: transaction.userId
+                                }
+                            }
+                        });
+
+                        if (!membership) {
+                            const assignedById = clubApplication?.reviewedById || transaction.club?.leaderUserId || null;
+                            membership = await prisma.clubMembership.create({
+                                data: {
+                                    clubId: transaction.clubId,
+                                    userId: transaction.userId,
+                                    role: 'MEMBER',
+                                    status: 'ACTIVE',
+                                    assignedById: assignedById,
+                                    activatedAt: new Date(),
+                                    joinedAt: new Date()
+                                }
+                            });
+                            console.log(`[Webhook] ✅ Created membership ${membership.id} in fallback handler`);
+                        }
+                    }
+                } catch (fallbackError) {
+                    console.error(`[Webhook] ❌ Error in fallback handler:`, fallbackError);
+                }
+            }
         }
 
         // Trường hợp khác
@@ -702,6 +938,19 @@ exports.handleReturn = async (req, res) => {
         let transaction = await prisma.transaction.findUnique({
             where: { paymentReference: orderCode.toString() },
             include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true
+                    }
+                },
+                club: {
+                    select: {
+                        id: true,
+                        leaderUserId: true
+                    }
+                },
                 referenceTicket: {
                     include: {
                         event: true
@@ -717,14 +966,17 @@ exports.handleReturn = async (req, res) => {
             });
         }
 
+        console.log(`[Return] Transaction ${transaction.id}, type: ${transaction.type}, status: ${transaction.status}, clubId: ${transaction.clubId}, userId: ${transaction.userId}`);
+
         // Kiểm tra trạng thái từ PayOS để đảm bảo chính xác
         try {
             const paymentInfo = await payosService.getPaymentInfo(parseInt(orderCode));
             const payosStatus = paymentInfo.data?.status;
+            console.log(`[Return] PayOS status: ${payosStatus}, DB status: ${transaction.status}, query.status: ${status}`);
 
             // Nếu PayOS báo đã PAID nhưng DB chưa cập nhật, cập nhật ngay
             if (payosStatus === 'PAID' && transaction.status !== 'SUCCESS') {
-                console.log(`Updating transaction ${transaction.id} to SUCCESS from return URL`);
+                console.log(`[Return] Updating transaction ${transaction.id} to SUCCESS from return URL`);
 
                 // Cập nhật transaction
                 transaction = await prisma.transaction.update({
@@ -734,6 +986,19 @@ exports.handleReturn = async (req, res) => {
                         confirmedAt: new Date()
                     },
                     include: {
+                        user: {
+                            select: {
+                                id: true,
+                                email: true,
+                                fullName: true
+                            }
+                        },
+                        club: {
+                            select: {
+                                id: true,
+                                leaderUserId: true
+                            }
+                        },
                         referenceTicket: {
                             include: {
                                 event: true
@@ -741,66 +1006,128 @@ exports.handleReturn = async (req, res) => {
                         }
                     }
                 });
-
-                // Nếu là EVENT_TICKET, cập nhật tickets và generate QR codes
-                if (transaction.type === 'EVENT_TICKET') {
-                    const tickets = await prisma.ticket.findMany({
-                        where: {
-                            transactionId: transaction.id
+            }
+            // Nếu PayOS báo FAILED / CANCELLED / EXPIRED mà DB vẫn PENDING → cập nhật FAILED
+            else if (
+                transaction.status === 'PENDING' &&
+                (payosStatus === 'FAILED' ||
+                    payosStatus === 'CANCELLED' ||
+                    payosStatus === 'CANCELED' ||
+                    payosStatus === 'EXPIRED' ||
+                    status === 'FAILED' ||
+                    status === 'CANCELLED')
+            ) {
+                console.log(`[Return] Updating transaction ${transaction.id} to FAILED from return URL (status=${payosStatus || status})`);
+                transaction = await prisma.transaction.update({
+                    where: { id: transaction.id },
+                    data: {
+                        status: 'FAILED'
+                    },
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                email: true,
+                                fullName: true
+                            }
                         },
-                        include: {
-                            event: true
+                        club: {
+                            select: {
+                                id: true,
+                                leaderUserId: true
+                            }
+                        },
+                        referenceTicket: {
+                            include: {
+                                event: true
+                            }
                         }
+                    }
+                });
+            }
+
+            // Xử lý MEMBERSHIP: Nếu transaction đã SUCCESS nhưng chưa có membership → tạo membership
+            // (Chạy cả khi vừa update SUCCESS và khi đã SUCCESS từ trước)
+            if (transaction.type === 'MEMBERSHIP' && (transaction.status === 'SUCCESS' || payosStatus === 'PAID')) {
+                console.log(`[Return] Processing MEMBERSHIP transaction ${transaction.id}`);
+                try {
+                    await ensureMembershipForTransaction(transaction);
+
+                    // Tạo ledger entry cho club (nếu chưa có)
+                    const existingLedger = await prisma.clubLedger.findFirst({
+                        where: { transactionId: transaction.id }
                     });
 
-                    const updatedTickets = [];
-                    for (const ticket of tickets) {
-                        if (ticket.status !== 'PAID') {
-                            const updateData = {
-                                status: 'PAID',
-                                purchasedAt: new Date(),
-                                assignedAt: new Date()
-                            };
+                    if (!existingLedger) {
+                        const lastLedger = await prisma.clubLedger.findFirst({
+                            where: { clubId: transaction.clubId },
+                            orderBy: { createdAt: 'desc' }
+                        });
 
-                            // Chỉ generate QR code nếu event format là OFFLINE
-                            if (ticket.event && ticket.event.format === 'OFFLINE' && !ticket.qrCode) {
-                                const qrCode = generateQRCode(ticket.eventId, ticket.id);
-                                updateData.qrCode = qrCode;
-                                await prisma.ticket.update({
-                                    where: { id: ticket.id },
-                                    data: updateData
-                                });
-                                updatedTickets.push({
-                                    id: ticket.id,
-                                    qrCode: qrCode,
-                                    ticketType: ticket.ticketType,
-                                    status: 'PAID'
-                                });
-                            } else {
-                                // ONLINE event hoặc đã có QR code
-                                await prisma.ticket.update({
-                                    where: { id: ticket.id },
-                                    data: updateData
-                                });
-                                const ticketData = {
-                                    id: ticket.id,
-                                    ticketType: ticket.ticketType,
-                                    status: 'PAID'
-                                };
-                                // Thêm onlineLink hoặc qrCode tùy theo format
-                                if (ticket.event && ticket.event.format === 'ONLINE') {
-                                    ticketData.onlineLink = ticket.onlineLink;
-                                } else {
-                                    ticketData.qrCode = ticket.qrCode;
-                                }
-                                updatedTickets.push(ticketData);
+                        const balanceAfter = (lastLedger?.balanceAfter || 0) + transaction.amount;
+
+                        await prisma.clubLedger.create({
+                            data: {
+                                clubId: transaction.clubId,
+                                type: 'INCOME',
+                                transactionId: transaction.id,
+                                amount: transaction.amount,
+                                balanceAfter: balanceAfter,
+                                note: `Phí gia nhập từ ${transaction.user?.email || 'N/A'}`
                             }
+                        });
+                    }
+
+                    console.log(`[Return] ✅ Membership processed successfully for transaction ${transaction.id}`);
+                } catch (membershipError) {
+                    console.error(`[Return] ❌ Error processing membership:`, membershipError);
+                }
+            }
+
+            // Nếu là EVENT_TICKET, cập nhật tickets và generate QR codes
+            if (transaction.type === 'EVENT_TICKET' && (transaction.status === 'SUCCESS' || payosStatus === 'PAID')) {
+                const tickets = await prisma.ticket.findMany({
+                    where: {
+                        transactionId: transaction.id
+                    },
+                    include: {
+                        event: true
+                    }
+                });
+
+                const updatedTickets = [];
+                for (const ticket of tickets) {
+                    if (ticket.status !== 'PAID') {
+                        const updateData = {
+                            status: 'PAID',
+                            purchasedAt: new Date(),
+                            assignedAt: new Date()
+                        };
+
+                        // Chỉ generate QR code nếu event format là OFFLINE
+                        if (ticket.event && ticket.event.format === 'OFFLINE' && !ticket.qrCode) {
+                            const qrCode = generateQRCode(ticket.eventId, ticket.id);
+                            updateData.qrCode = qrCode;
+                            await prisma.ticket.update({
+                                where: { id: ticket.id },
+                                data: updateData
+                            });
+                            updatedTickets.push({
+                                id: ticket.id,
+                                qrCode: qrCode,
+                                ticketType: ticket.ticketType,
+                                status: 'PAID'
+                            });
                         } else {
-                            // Ticket đã PAID, chỉ cần format response
+                            // ONLINE event hoặc đã có QR code
+                            await prisma.ticket.update({
+                                where: { id: ticket.id },
+                                data: updateData
+                            });
                             const ticketData = {
                                 id: ticket.id,
                                 ticketType: ticket.ticketType,
-                                status: ticket.status
+                                status: 'PAID'
                             };
                             // Thêm onlineLink hoặc qrCode tùy theo format
                             if (ticket.event && ticket.event.format === 'ONLINE') {
@@ -810,13 +1137,27 @@ exports.handleReturn = async (req, res) => {
                             }
                             updatedTickets.push(ticketData);
                         }
+                    } else {
+                        // Ticket đã PAID, chỉ cần format response
+                        const ticketData = {
+                            id: ticket.id,
+                            ticketType: ticket.ticketType,
+                            status: ticket.status
+                        };
+                        // Thêm onlineLink hoặc qrCode tùy theo format
+                        if (ticket.event && ticket.event.format === 'ONLINE') {
+                            ticketData.onlineLink = ticket.onlineLink;
+                        } else {
+                            ticketData.qrCode = ticket.qrCode;
+                        }
+                        updatedTickets.push(ticketData);
                     }
-
-                    // Redirect về FE với kết quả thành công
-                    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-                    const redirectUrl = `${frontendUrl}/payment/result?status=SUCCESS&orderCode=${encodeURIComponent(orderCode)}&transactionId=${encodeURIComponent(transaction.id)}`;
-                    return res.redirect(302, redirectUrl);
                 }
+
+                // Redirect về FE với kết quả thành công
+                const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+                const redirectUrl = `${frontendUrl}/payment/result?status=SUCCESS&orderCode=${encodeURIComponent(orderCode)}&transactionId=${encodeURIComponent(transaction.id)}`;
+                return res.redirect(302, redirectUrl);
             }
         } catch (payosError) {
             console.error('Error checking PayOS status:', payosError);

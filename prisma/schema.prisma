@@ -9,34 +9,35 @@ datasource db {
 }
 
 model User {
-  id                   String              @id @default(uuid())
-  email                String              @unique
-  passwordHash         String?             @map("password_hash")
-  fullName             String?             @map("full_name")
-  studentCode          String?             @unique @map("student_code")
-  phone                String?
-  avatarUrl            String?             @map("avatar_url")
-  isActive             Boolean             @default(true) @map("is_active")
-  emailVerified        Boolean             @default(false) @map("email_verified")
-  createdAt            DateTime            @default(now()) @map("created_at")
-  updatedAt            DateTime            @updatedAt @map("updated_at")
-  auth_role            SystemRole          @default(USER)
-  isLeader             Boolean?            @map("is_leader")
-  staffCheckins        Checkin[]
-  reviewedApplications ClubApplication[]   @relation("ReviewedBy")
-  applications         ClubApplication[]   @relation("ApplicantUser")
-  assignedMemberships  ClubMembership[]    @relation("AssignedBy")
-  memberships          ClubMembership[]    @relation("MemberUser")
-  createdClubs         Club[]              @relation("ClubCreator")
-  ledClubs             Club[]              @relation("ClubLeader")
-  eventRegistrations   EventRegistration[]
-  eventStaff           EventStaff[]
-  createdEvents        Event[]             @relation("EventCreator")
-  feedbacks            Feedback[]
-  approvedFundRequests FundRequest[]       @relation("FundRequestApprover")
-  createdFundRequests  FundRequest[]       @relation("FundRequestCreator")
-  tickets              Ticket[]
-  transactions         Transaction[]
+  id                               String              @id @default(uuid())
+  email                            String              @unique
+  passwordHash                     String?             @map("password_hash")
+  fullName                         String?             @map("full_name")
+  studentCode                      String?             @unique @map("student_code")
+  phone                            String?
+  avatarUrl                        String?             @map("avatar_url")
+  isActive                         Boolean             @default(true) @map("is_active")
+  emailVerified                    Boolean             @default(false) @map("email_verified")
+  createdAt                        DateTime            @default(now()) @map("created_at")
+  updatedAt                        DateTime            @updatedAt @map("updated_at")
+  auth_role                        SystemRole          @default(USER)
+  isLeader                         Boolean?            @map("is_leader")
+  staffCheckins                    Checkin[]
+  reviewedApplications             ClubApplication[]   @relation("ReviewedBy")
+  applications                     ClubApplication[]   @relation("ApplicantUser")
+  assignedMemberships              ClubMembership[]    @relation("AssignedBy")
+  memberships                      ClubMembership[]    @relation("MemberUser")
+  createdClubs                     Club[]              @relation("ClubCreator")
+  ledClubs                         Club[]              @relation("ClubLeader")
+  eventRegistrations               EventRegistration[]
+  eventStaff                       EventStaff[]
+  events_events_approval_byTousers Event[]             @relation("events_approval_byTousers")
+  createdEvents                    Event[]             @relation("EventCreator")
+  feedbacks                        Feedback[]
+  approvedFundRequests             FundRequest[]       @relation("FundRequestApprover")
+  createdFundRequests              FundRequest[]       @relation("FundRequestCreator")
+  tickets                          Ticket[]
+  transactions                     Transaction[]
 
   @@map("users")
 }
@@ -121,32 +122,36 @@ model ClubApplication {
 }
 
 model Event {
-  id            String              @id @default(uuid())
-  clubId        String              @map("club_id")
-  createdById   String?             @map("created_by")
-  title         String
-  description   String?
-  type          EventType           @default(PUBLIC)
-  pricingType   PricingType?        @map("pricing_type")
-  price         Int                 @default(0)
-  capacity      Int?
-  visibleFrom   DateTime?           @map("visible_from")
-  startTime     DateTime?           @map("start_time")
-  endTime       DateTime?           @map("end_time")
-  location      String?
-  isActive      Boolean             @default(true) @map("is_active")
-  createdAt     DateTime            @default(now()) @map("created_at")
-  updatedAt     DateTime            @updatedAt @map("updated_at")
-  format        EventFormat         @default(OFFLINE)
-  onlineLink    String?             @map("online_link")
-  checkins      Checkin[]
-  registrations EventRegistration[]
-  staff         EventStaff[]
-  club          Club                @relation(fields: [clubId], references: [id], onDelete: Cascade)
-  createdBy     User?               @relation("EventCreator", fields: [createdById], references: [id])
-  feedbacks     Feedback[]
-  fundRequests  FundRequest[]
-  tickets       Ticket[]
+  id                              String              @id @default(uuid())
+  clubId                          String              @map("club_id")
+  createdById                     String?             @map("created_by")
+  title                           String
+  description                     String?
+  type                            EventType           @default(PUBLIC)
+  pricingType                     PricingType?        @map("pricing_type")
+  price                           Int                 @default(0)
+  capacity                        Int?
+  visibleFrom                     DateTime?           @map("visible_from")
+  startTime                       DateTime?           @map("start_time")
+  endTime                         DateTime?           @map("end_time")
+  location                        String?
+  isActive                        Boolean             @default(true) @map("is_active")
+  createdAt                       DateTime            @default(now()) @map("created_at")
+  updatedAt                       DateTime            @updatedAt @map("updated_at")
+  format                          EventFormat         @default(OFFLINE)
+  onlineLink                      String?             @map("online_link")
+  approval_at                     DateTime?
+  approval_by                     String?
+  approval_status                 EventApprovalStatus @default(PENDING)
+  checkins                        Checkin[]
+  registrations                   EventRegistration[]
+  staff                           EventStaff[]
+  users_events_approval_byTousers User?               @relation("events_approval_byTousers", fields: [approval_by], references: [id])
+  club                            Club                @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  createdBy                       User?               @relation("EventCreator", fields: [createdById], references: [id])
+  feedbacks                       Feedback[]
+  fundRequests                    FundRequest[]
+  tickets                         Ticket[]
 
   @@map("events")
 }
@@ -157,9 +162,6 @@ model Ticket {
   userId             String?            @map("user_id")
   ticketType         String?            @map("ticket_type")
   price              Int                @default(0)
-  holderName         String?            @map("holder_name")
-  holderEmail        String?            @map("holder_email")
-  holderPhone        String?            @map("holder_phone")
   transactionId      String?            @map("transaction_id")
   qrCode             String?            @unique @map("qr_code")
   status             TicketStatus       @default(INIT)
@@ -168,6 +170,9 @@ model Ticket {
   usedAt             DateTime?          @map("used_at")
   createdAt          DateTime           @default(now()) @map("created_at")
   onlineLink         String?            @map("online_link")
+  holderName         String?            @map("holder_name")
+  holderEmail        String?            @map("holder_email")
+  holderPhone        String?            @map("holder_phone")
   checkins           Checkin[]
   registration       EventRegistration? @relation("EventRegistrationTicket")
   event              Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
@@ -206,25 +211,26 @@ model Transaction {
 }
 
 model FundRequest {
-  id            String            @id @default(uuid())
-  clubId        String            @map("club_id")
-  eventId       String?           @map("event_id")
-  createdById   String?           @map("created_by")
-  approvedById  String?           @map("approved_by")
-  title         String
-  description   String?
-  amount        Int
-  proofImageUrl String?           @map("proof_image_url")
-  status        FundRequestStatus @default(PENDING)
-  rejectReason  String?           @map("reject_reason")
-  createdAt     DateTime          @default(now()) @map("created_at")
-  reviewedAt    DateTime?         @map("reviewed_at")
-  disbursedAt   DateTime?         @map("disbursed_at")
-  ledger        ClubLedger[]
-  approvedBy    User?             @relation("FundRequestApprover", fields: [approvedById], references: [id])
-  club          Club              @relation(fields: [clubId], references: [id], onDelete: Cascade)
-  createdBy     User?             @relation("FundRequestCreator", fields: [createdById], references: [id])
-  event         Event?            @relation(fields: [eventId], references: [id])
+  id                 String               @id @default(uuid())
+  clubId             String               @map("club_id")
+  eventId            String?              @map("event_id")
+  createdById        String?              @map("created_by")
+  approvedById       String?              @map("approved_by")
+  title              String
+  description        String?
+  amount             Int
+  proofImageUrl      String?              @map("proof_image_url")
+  status             FundRequestStatus    @default(PENDING)
+  rejectReason       String?              @map("reject_reason")
+  createdAt          DateTime             @default(now()) @map("created_at")
+  reviewedAt         DateTime?            @map("reviewed_at")
+  disbursedAt        DateTime?            @map("disbursed_at")
+  ledger             ClubLedger[]
+  fund_request_items fund_request_items[]
+  approvedBy         User?                @relation("FundRequestApprover", fields: [approvedById], references: [id])
+  club               Club                 @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  createdBy          User?                @relation("FundRequestCreator", fields: [createdById], references: [id])
+  event              Event?               @relation(fields: [eventId], references: [id])
 
   @@map("fund_requests")
 }
@@ -306,6 +312,16 @@ model Feedback {
   @@map("feedbacks")
 }
 
+model fund_request_items {
+  id              String      @id
+  fund_request_id String
+  name            String
+  description     String?
+  amount          Int
+  created_at      DateTime    @default(now())
+  fund_requests   FundRequest @relation(fields: [fund_request_id], references: [id], onDelete: Cascade)
+}
+
 enum SystemRole {
   ADMIN
   USER
@@ -385,4 +401,10 @@ enum LedgerType {
 enum EventFormat {
   ONLINE
   OFFLINE
+}
+
+enum EventApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }

@@ -82,6 +82,49 @@ router.post('/login', user.login);
 
 /**
  * @swagger
+ * /api/users/login-with-google:
+ *   post:
+ *     summary: Đăng nhập bằng Google OAuth (cho user đã có trong hệ thống)
+ *     tags: [Users]
+ *     description: |
+ *       User đã login với Google qua Supabase, FE gửi email lên để BE tạo JWT token.
+ *       Chỉ áp dụng cho các user đã được đăng ký trong hệ thống (có email trong bảng users).
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 description: Email từ Google OAuth (đã được verify bởi Supabase)
+ *                 example: student@university.edu.vn
+ *     responses:
+ *       200:
+ *         description: Login thành công, trả về accessToken
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 accessToken:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *       404:
+ *         description: Email chưa được đăng ký trong hệ thống
+ *       403:
+ *         description: Tài khoản đã bị vô hiệu hóa
+ */
+router.post('/login-with-google', user.loginWithGoogle);
+
+/**
+ * @swagger
  * /api/users/getprofile:
  *   get:
  *     summary: Lấy profile của user hiện tại
