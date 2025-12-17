@@ -266,9 +266,10 @@ async function handleMembershipPayment(req, res, clubId, userId) {
                 });
             }
 
-            // Transaction tồn tại nhưng không có checkoutUrl -> tạo lại payment link
+            // Transaction tồn tại nhưng không có checkoutUrl -> tạo lại payment link với orderCode MỚI
+            // (vì orderCode cũ có thể đã tồn tại trong PayOS)
             try {
-                const orderCode = parseInt(existingTransaction.paymentReference) || parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+                const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
 
                 const paymentResult = await payosService.createPaymentLink({
                     orderCode: orderCode,
@@ -299,7 +300,7 @@ async function handleMembershipPayment(req, res, clubId, userId) {
                     message: 'Tạo payment link thành công',
                     data: {
                         transactionId: existingTransaction.id,
-                        paymentLink: paymentResult.checkoutUrl,
+                        paymentLink: paymentResult.paymentLink,
                         qrCode: paymentResult.qrCode || null,
                         amount: club.membershipFeeAmount,
                         orderCode: orderCode
@@ -343,7 +344,8 @@ async function handleMembershipPayment(req, res, clubId, userId) {
                 console.log('[handleMembershipPayment] Creating new transaction for approved application');
 
                 try {
-                    const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+                    // Tạo orderCode unique hơn để tránh trùng với PayOS
+                    const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
 
                     // Tạo transaction mới
                     const newTransaction = await prisma.transaction.create({
@@ -390,7 +392,7 @@ async function handleMembershipPayment(req, res, clubId, userId) {
                         message: 'Tạo payment link thành công',
                         data: {
                             transactionId: newTransaction.id,
-                            paymentLink: paymentResult.checkoutUrl,
+                            paymentLink: paymentResult.paymentLink,
                             qrCode: paymentResult.qrCode || null,
                             amount: club.membershipFeeAmount,
                             orderCode: orderCode
@@ -455,7 +457,7 @@ async function handleMembershipPayment(req, res, clubId, userId) {
         // 7. Tạo orderCode từ transaction ID (convert UUID to number)
         // PayOS yêu cầu orderCode là số nguyên dương, unique
         // Sử dụng timestamp + random để tạo unique number
-        const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+        const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
 
         // 8. Tạo payment link từ PayOS
         // Lưu ý: Description sẽ tự động được truncate xuống 25 ký tự trong payosService
@@ -621,7 +623,7 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
         });
 
         // 10. Tạo orderCode
-        const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+        const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
 
         // 11. Tạo payment link từ PayOS
         // Lưu ý: Description sẽ tự động được truncate xuống 25 ký tự trong payosService
