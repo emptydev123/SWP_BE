@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const eventsController = require('../controller/EventsController');
 const auth = require('../middlewares/auth');
+const upload = require('../middlewares/upload');
 
 /**
  * @swagger
@@ -50,6 +51,32 @@ const auth = require('../middlewares/auth');
 router.get('/', 
     auth.authMiddleWare,
     eventsController.getAllEvents
+);
+
+/**
+ * @swagger
+ * /api/events/pending:
+ *   get:
+ *     summary: Get list of pending events for approval (Treasurer/Admin only)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     responses:
+ *       200:
+ *         description: List of pending events with fund requests
+ *       403:
+ *         description: No permission
+ */
+router.get('/pending',
+    auth.authMiddleWare,
+    eventsController.getPendingEvents
 );
 
 /**
@@ -163,6 +190,33 @@ router.get('/:eventId',
  *                   type: string
  *                 description: Array of user IDs - danh sách thành viên club làm staff quản lý event (optional)
  *                 example: ["user-id-1", "user-id-2"]
+ *               fundRequest:
+ *                 type: object
+ *                 required:
+ *                   - items
+ *                 properties:
+ *                   title:
+ *                     type: string
+ *                     description: Tiêu đề yêu cầu quỹ
+ *                   description:
+ *                     type: string
+ *                     description: Mô tả chi tiết yêu cầu quỹ
+ *                   items:
+ *                     type: array
+ *                     description: Danh sách hạng mục chi phí
+ *                     items:
+ *                       type: object
+ *                       required: [name, amount]
+ *                       properties:
+ *                         name:
+ *                           type: string
+ *                           example: Thuê hội trường
+ *                         amount:
+ *                           type: integer
+ *                           example: 2000000
+ *                         description:
+ *                           type: string
+ *                           example: Chi phí thuê phòng trong 4 giờ
  *     responses:
  *       201:
  *         description: Event created successfully
@@ -278,6 +332,96 @@ router.delete('/:eventId',
 
 /**
  * @swagger
+ * /api/events/{eventId}/approve:
+ *   post:
+ *     summary: Approve event fund request (Treasurer/Admin)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: eventId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               proof:
+ *                 type: string
+ *                 format: binary
+ *                 description: Ảnh xác nhận (file upload)
+ *               proofImageUrl:
+ *                 type: string
+ *                 description: Link ảnh (nếu đã có sẵn URL, không cần upload)
+ *     responses:
+ *       200:
+ *         description: Approved
+ *       403:
+ *         description: No permission
+ */
+router.post('/:eventId/approve',
+    auth.authMiddleWare,
+    (req, res, next) => {
+        if (upload.uploadImage) {
+            upload.uploadImage.single('proof')(req, res, (err) => {
+                if (err) {
+                    return res.status(400).json({
+                        success: false,
+                        message: err.message || 'Lỗi khi upload file'
+                    });
+                }
+                next();
+            });
+        } else {
+            next();
+        }
+    },
+    eventsController.approveEvent
+);
+
+/**
+ * @swagger
+ * /api/events/{eventId}/reject:
+ *   post:
+ *     summary: Reject event fund request (Treasurer/Admin)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: eventId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Lý do từ chối
+ *     responses:
+ *       200:
+ *         description: Rejected
+ *       403:
+ *         description: No permission
+ */
+router.post('/:eventId/reject',
+    auth.authMiddleWare,
+    eventsController.rejectEvent
+);
+
+/**
+ * @swagger
  * /api/events/{eventId}/register:
  *   post:
  *     summary: Register for event (FREE or PAID)
@@ -369,6 +513,60 @@ router.post('/:eventId/register',
 router.get('/:eventId/participants',
     auth.authMiddleWare,
     eventsController.getEventParticipants
+);
+
+/**
+ * @swagger
+ * /api/events/pending:
+ *   get:
+ *     summary: Get list of pending events for approval (Treasurer/Admin only)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     responses:
+ *       200:
+ *         description: List of pending events with fund requests
+ *       403:
+ *         description: No permission
+ */
+router.get('/pending',
+    auth.authMiddleWare,
+    eventsController.getPendingEvents
+);
+
+/**
+ * @swagger
+ * /api/events/{eventId}/fund-request/payment:
+ *   post:
+ *     summary: Create payment link for fund request (Treasurer/Admin only)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: eventId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Event ID
+ *     responses:
+ *       200:
+ *         description: Payment link created successfully
+ *       403:
+ *         description: No permission
+ *       404:
+ *         description: Event not found
+ */
+router.post('/:eventId/fund-request/payment',
+    auth.authMiddleWare,
+    eventsController.createFundRequestPayment
 );
 
 module.exports = router;

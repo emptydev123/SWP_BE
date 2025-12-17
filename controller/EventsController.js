@@ -24,7 +24,8 @@ exports.createEvent = async (req, res) => {
             format,         // 'ONLINE' hoặc 'OFFLINE'
             onlineLink,     // String: Google Meet link (required nếu format = 'ONLINE')
             visibleFrom,    // DateTime: thời điểm event hiển thị (optional)
-            staffIds        // Array of user IDs: danh sách thành viên club làm staff quản lý event
+            staffIds,       // Array of user IDs: danh sách thành viên club làm staff quản lý event
+            fundRequest     // Object: { title, description, items: [{ name, amount, description? }] }
         } = req.body;
 
         const userId = req.userId;
@@ -102,13 +103,14 @@ exports.createEvent = async (req, res) => {
         // 5. Validate price nếu là PAID và set finalPrice
         let finalPrice = 0;
         if (pricingType === 'PAID') {
-            if (!price || price <= 0) {
+            const numericPrice = Number(price);
+            if (!Number.isInteger(numericPrice) || numericPrice <= 0) {
                 return res.status(400).json({
                     success: false,
-                    message: 'price phải lớn hơn 0 khi pricingType là PAID'
+                    message: 'price phải là số nguyên dương khi pricingType là PAID'
                 });
             }
-            finalPrice = price;
+            finalPrice = numericPrice;
         } else {
             // Nếu FREE, set finalPrice = 0
             finalPrice = 0;
@@ -127,24 +129,79 @@ exports.createEvent = async (req, res) => {
         }
 
         // 7. Validate dates
-        if (startTime && endTime) {
-            const start = new Date(startTime);
-            const end = new Date(endTime);
-            
-            if (start >= end) {
+        if (!startTime || !endTime) {
+            return res.status(400).json({
+                success: false,
+                message: 'startTime và endTime là bắt buộc'
+            });
+        }
+
+        const start = new Date(startTime);
+        const end = new Date(endTime);
+        const now = new Date();
+        const minStart = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // tối thiểu sau 7 ngày
+
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+            return res.status(400).json({
+                success: false,
+                message: 'startTime hoặc endTime không hợp lệ'
+            });
+        }
+
+        if (start <= now) {
+            return res.status(400).json({
+                success: false,
+                message: 'startTime phải sau thời điểm hiện tại'
+            });
+        }
+
+        if (start < minStart) {
+            return res.status(400).json({
+                success: false,
+                message: 'startTime phải cách hiện tại ít nhất 7 ngày'
+            });
+        }
+
+        if (start.getTime() === end.getTime()) {
+            return res.status(400).json({
+                success: false,
+                message: 'endTime không được trùng với startTime'
+            });
+        }
+
+        if (start >= end) {
+            return res.status(400).json({
+                success: false,
+                message: 'endTime phải sau startTime'
+            });
+        }
+
+        if (visibleFrom) {
+            const visibleDate = new Date(visibleFrom);
+            if (Number.isNaN(visibleDate.getTime())) {
                 return res.status(400).json({
                     success: false,
-                    message: 'endTime phải sau startTime'
+                    message: 'visibleFrom không hợp lệ'
+                });
+            }
+            if (visibleDate > start) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'visibleFrom phải trước startTime'
                 });
             }
         }
 
         // 8. Validate capacity
-        if (capacity && capacity <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'capacity phải lớn hơn 0'
-            });
+        if (capacity !== undefined) {
+            const numericCapacity = Number(capacity);
+            if (!Number.isInteger(numericCapacity) || numericCapacity <= 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'capacity phải là số nguyên dương'
+                });
+            }
+            req.body.capacity = numericCapacity;
         }
 
         // 9. Validate staffIds nếu có
@@ -172,7 +229,48 @@ exports.createEvent = async (req, res) => {
             }
         }
 
-        // 10. Tạo event
+        // 10. Validate fund request
+        if (!fundRequest || !Array.isArray(fundRequest.items) || fundRequest.items.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp fundRequest với danh sách items'
+            });
+        }
+
+        let normalizedItems;
+        try {
+            normalizedItems = fundRequest.items.map((item, idx) => {
+                const itemName = item?.name?.trim();
+                const itemAmount = Number(item?.amount);
+                if (!itemName) {
+                    throw new Error(`Tên hạng mục quỹ không hợp lệ tại vị trí ${idx + 1}`);
+                }
+                if (!Number.isInteger(itemAmount) || itemAmount <= 0) {
+                    throw new Error(`Số tiền hạng mục phải là số nguyên dương tại vị trí ${idx + 1}`);
+                }
+                return {
+                    name: itemName,
+                    description: item?.description?.trim() || null,
+                    amount: itemAmount
+                };
+            });
+        } catch (validationError) {
+            return res.status(400).json({
+                success: false,
+                message: validationError.message
+            });
+        }
+
+        const totalFundAmount = normalizedItems.reduce((sum, item) => sum + item.amount, 0);
+
+        if (totalFundAmount <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Tổng kinh phí phải lớn hơn 0'
+            });
+        }
+
+        // 11. Tạo event + fund request
         const newEvent = await prisma.event.create({
             data: {
                 clubId: clubId,
@@ -183,18 +281,32 @@ exports.createEvent = async (req, res) => {
                 pricingType: pricingType,
                 price: finalPrice,
                 capacity: capacity || null,
-                startTime: startTime ? new Date(startTime) : null,
-                endTime: endTime ? new Date(endTime) : null,
+                startTime: new Date(startTime),
+                endTime: new Date(endTime),
                 location: eventFormat === 'OFFLINE' ? (location ? location.trim() : null) : null,
                 format: eventFormat,
                 onlineLink: eventFormat === 'ONLINE' ? (onlineLink ? onlineLink.trim() : null) : null,
                 visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
-                isActive: true,
+                isActive: false, // Chờ duyệt quỹ
+                approvalStatus: 'PENDING',
                 staff: staffIds && Array.isArray(staffIds) && staffIds.length > 0 ? {
                     create: staffIds.map(staffId => ({
                         userId: staffId
                     }))
-                } : undefined
+                } : undefined,
+                fundRequests: {
+                    create: {
+                        clubId: clubId,
+                        createdById: userId,
+                        title: fundRequest.title?.trim() || `Yêu cầu quỹ cho event: ${title}`,
+                        description: fundRequest.description?.trim() || description || null,
+                        amount: totalFundAmount,
+                        status: 'PENDING',
+                        items: {
+                            create: normalizedItems
+                        }
+                    }
+                }
             },
             include: {
                 club: {
@@ -222,14 +334,31 @@ exports.createEvent = async (req, res) => {
                             }
                         }
                     }
+                },
+                fundRequests: {
+                    include: {
+                        items: true
+                    }
                 }
             }
+        });
+
+        // Chuẩn hóa field tổng quỹ: totalAmount thay cho amount
+        const mappedFundRequests = newEvent.fundRequests?.map(fr => {
+            const { amount, ...rest } = fr;
+            return {
+                ...rest,
+                totalAmount: amount
+            };
         });
 
         res.status(201).json({
             success: true,
             message: 'Tạo event thành công',
-            data: newEvent
+            data: {
+                ...newEvent,
+                fundRequests: mappedFundRequests
+            }
         });
 
     } catch (error) {
@@ -248,7 +377,7 @@ exports.createEvent = async (req, res) => {
  */
 exports.getAllEvents = async (req, res) => {
     try {
-        const { clubId, type, pricingType, includeInactive } = req.query;
+        const { clubId, type, pricingType, includeInactive, includePending } = req.query;
         const userId = req.userId; // Luôn có giá trị vì đã bắt buộc login
 
         // Normalize type to uppercase
@@ -258,6 +387,11 @@ exports.getAllEvents = async (req, res) => {
         const where = {};
         const now = new Date();
         
+        // Chỉ trả về events đã duyệt quỹ, trừ khi yêu cầu includePending
+        if (includePending !== 'true') {
+            where.approvalStatus = 'APPROVED';
+        }
+
         // Filter by endTime instead of isActive status
         // This allows staff to see all their assigned events, including ended ones
         if (includeInactive !== 'true') {
@@ -572,11 +706,70 @@ exports.updateEvent = async (req, res) => {
             }
         });
 
-        if (!membership && event.club.leaderUserId !== req.userId && req.user.role !== 'ADMIN') {
+        if (!membership && event.club.leaderUserId !== req.userId && req.user.auth_role !== 'ADMIN') {
             return res.status(403).json({
                 success: false,
                 message: 'Chỉ club leader mới có quyền cập nhật event này'
             });
+        }
+
+        if (event.approvalStatus !== 'PENDING' && req.user?.auth_role !== 'ADMIN') {
+            return res.status(400).json({
+                success: false,
+                message: 'Event đã được duyệt/từ chối, không thể chỉnh sửa'
+            });
+        }
+
+        // 2.1. Kiểm tra số vé đã bán/đăng ký để quyết định field nào được phép update
+        const soldTicketsCount = await prisma.ticket.count({
+            where: {
+                eventId: eventId,
+                status: { in: ['PAID', 'RESERVED', 'USED', 'INIT'] }
+            }
+        });
+
+        const hasRegistrations = soldTicketsCount > 0;
+        const now = new Date();
+        const eventStartTime = event.startTime ? new Date(event.startTime) : null;
+        const isEventSoon = eventStartTime && (eventStartTime.getTime() - now.getTime()) < 24 * 60 * 60 * 1000; // Còn < 24h
+
+        // 2.2. Chặn update các field quan trọng nếu đã có người đăng ký hoặc event sắp diễn ra
+        if (hasRegistrations || isEventSoon) {
+            // Không cho update các field ảnh hưởng lớn
+            if (type !== undefined) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Không thể thay đổi type (PUBLIC/INTERNAL) khi đã có người đăng ký hoặc event sắp diễn ra'
+                });
+            }
+
+            if (pricingType !== undefined) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Không thể thay đổi pricingType (FREE/PAID) khi đã có người đăng ký hoặc event sắp diễn ra'
+                });
+            }
+
+            if (price !== undefined) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Không thể thay đổi giá vé khi đã có người đăng ký hoặc event sắp diễn ra'
+                });
+            }
+
+            if (format !== undefined) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Không thể thay đổi format (ONLINE/OFFLINE) khi đã có người đăng ký hoặc event sắp diễn ra'
+                });
+            }
+
+            if (startTime !== undefined || endTime !== undefined) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Không thể thay đổi thời gian diễn ra khi đã có người đăng ký hoặc event sắp diễn ra'
+                });
+            }
         }
 
         // 3. Validate pricingType và price nếu có thay đổi
@@ -588,10 +781,57 @@ exports.updateEvent = async (req, res) => {
                 });
             }
 
-            if (pricingType === 'PAID' && (!price || price <= 0)) {
+            const numericPrice = Number(price);
+            if (pricingType === 'PAID' && (!Number.isInteger(numericPrice) || numericPrice <= 0)) {
                 return res.status(400).json({
                     success: false,
-                    message: 'price phải lớn hơn 0 khi pricingType là PAID'
+                    message: 'price phải là số nguyên dương khi pricingType là PAID'
+                });
+            }
+        }
+
+        // Validate capacity nếu thay đổi
+        if (capacity !== undefined) {
+            const numericCapacity = Number(capacity);
+            if (!Number.isInteger(numericCapacity) || numericCapacity <= 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'capacity phải là số nguyên dương'
+                });
+            }
+
+            // Capacity mới phải >= số vé đã bán
+            if (numericCapacity < soldTicketsCount) {
+                return res.status(400).json({
+                    success: false,
+                    message: `capacity mới (${numericCapacity}) phải lớn hơn hoặc bằng số vé đã bán (${soldTicketsCount})`
+                });
+            }
+        }
+
+        // Validate thời gian nếu thay đổi (không bắt buộc >= 7 ngày, chỉ check hợp lệ và thứ tự)
+        if (startTime !== undefined || endTime !== undefined) {
+            const nextStart = startTime !== undefined ? new Date(startTime) : event.startTime;
+            const nextEnd = endTime !== undefined ? new Date(endTime) : event.endTime;
+
+            if (!nextStart || !nextEnd || Number.isNaN(nextStart.getTime()) || Number.isNaN(nextEnd.getTime())) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'startTime/endTime không hợp lệ'
+                });
+            }
+
+            if (nextStart.getTime() === nextEnd.getTime()) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'endTime không được trùng với startTime'
+                });
+            }
+
+            if (nextStart >= nextEnd) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'endTime phải sau startTime'
                 });
             }
         }
@@ -697,8 +937,8 @@ exports.updateEvent = async (req, res) => {
         if (description !== undefined) updateData.description = description;
         if (type !== undefined) updateData.type = type;
         if (pricingType !== undefined) updateData.pricingType = pricingType;
-        if (price !== undefined) updateData.price = price;
-        if (capacity !== undefined) updateData.capacity = capacity;
+        if (price !== undefined) updateData.price = Number(price);
+        if (capacity !== undefined) updateData.capacity = Number(capacity);
         if (startTime !== undefined) updateData.startTime = startTime ? new Date(startTime) : null;
         if (endTime !== undefined) updateData.endTime = endTime ? new Date(endTime) : null;
         const finalFormatForUpdate = eventFormat !== undefined ? eventFormat : event.format;
@@ -871,6 +1111,8 @@ exports.registerEvent = async (req, res) => {
                 price: true,
                 capacity: true,
                 isActive: true,
+                approvalStatus: true,
+                startTime: true,
                 format: true,
                 onlineLink: true,
                 club: {
@@ -896,6 +1138,26 @@ exports.registerEvent = async (req, res) => {
                 success: false,
                 message: 'Event đã bị vô hiệu hóa'
             });
+        }
+
+        // 4.1 Kiểm tra trạng thái duyệt quỹ
+        if (event.approvalStatus !== 'APPROVED') {
+            return res.status(400).json({
+                success: false,
+                message: 'Event chưa được duyệt quỹ, không thể đăng ký'
+            });
+        }
+
+        // 4.2 Đóng cổng đăng ký trước giờ bắt đầu 1 giờ
+        if (event.startTime) {
+            const now = new Date();
+            const startTime = new Date(event.startTime);
+            if (startTime - now <= 60 * 60 * 1000) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Đã đóng đăng ký: event sẽ diễn ra trong vòng 1 giờ'
+                });
+            }
         }
 
         // 4. Kiểm tra capacity nếu có
@@ -1392,6 +1654,576 @@ exports.getEventParticipants = async (req, res) => {
         res.status(500).json({
             success: false,
             message: error.message || 'Lỗi khi lấy danh sách người tham gia'
+        });
+    }
+};
+
+/**
+ * Duyệt event (Treasurer hoặc Admin)
+ * - Kiểm tra quỹ có đủ không
+ * - Cập nhật fund request + event
+ */
+exports.approveEvent = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { proofImageUrl } = req.body;
+        const reviewerId = req.userId;
+
+        const uploadedProof = req.file ? `/uploads/${req.file.filename}` : null;
+        const finalProofUrl = (proofImageUrl && proofImageUrl.trim()) || uploadedProof;
+
+        if (!finalProofUrl) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp hình ảnh chuyển khoản xác nhận (upload file hoặc proofImageUrl)'
+            });
+        }
+
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            include: {
+                club: true,
+                fundRequests: {
+                    include: { items: true },
+                    orderBy: { createdAt: 'desc' }
+                }
+            }
+        });
+
+        if (!event) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy event'
+            });
+        }
+
+        // Chỉ treasurer hoặc admin được duyệt
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: event.clubId,
+                userId: reviewerId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới được duyệt event'
+            });
+        }
+
+        if (event.approvalStatus !== 'PENDING') {
+            return res.status(400).json({
+                success: false,
+                message: 'Event đã được xử lý trước đó'
+            });
+        }
+
+        const fundRequest = event.fundRequests?.[0];
+        if (!fundRequest || fundRequest.status !== 'PENDING') {
+            return res.status(400).json({
+                success: false,
+                message: 'Không tìm thấy fund request chờ duyệt'
+            });
+        }
+
+        // Kiểm tra số dư quỹ
+        const incomeAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: event.clubId, type: 'INCOME' },
+            _sum: { amount: true }
+        });
+        const expenseAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: event.clubId, type: 'EXPENSE' },
+            _sum: { amount: true }
+        });
+        const currentBalance = (incomeAgg._sum.amount || 0) - (expenseAgg._sum.amount || 0);
+
+        if (currentBalance < fundRequest.amount) {
+            return res.status(400).json({
+                success: false,
+                message: `Quỹ hiện có ${currentBalance} VND, không đủ so với yêu cầu ${fundRequest.amount} VND`
+            });
+        }
+
+        // Tính số dư sau khi chi (để lưu vào ledger)
+        const balanceAfter = currentBalance - fundRequest.amount;
+
+        // Tạo ledger entry để ghi nhận chi tiền + update fund request + event
+        const [ledgerEntry, updatedFund, updatedEvent] = await prisma.$transaction([
+            // Tạo ledger entry ghi nhận chi tiền
+            prisma.clubLedger.create({
+                data: {
+                    clubId: event.clubId,
+                    type: 'EXPENSE',
+                    fundRequestId: fundRequest.id,
+                    amount: fundRequest.amount,
+                    balanceAfter: balanceAfter,
+                    note: `Chi quỹ cho event: ${event.title}`
+                }
+            }),
+            // Update fund request
+            prisma.fundRequest.update({
+                where: { id: fundRequest.id },
+                data: {
+                    status: 'APPROVED',
+                    approvedById: reviewerId,
+                    reviewedAt: new Date(),
+                    disbursedAt: new Date(),
+                    proofImageUrl: finalProofUrl
+                },
+                include: { items: true }
+            }),
+            // Update event
+            prisma.event.update({
+                where: { id: eventId },
+                data: {
+                    approvalStatus: 'APPROVED',
+                    approvalById: reviewerId,
+                    approvalAt: new Date(),
+                    isActive: true
+                }
+            })
+        ]);
+
+        res.status(200).json({
+            success: true,
+            message: 'Duyệt event thành công',
+            data: {
+                event: updatedEvent,
+                fundRequest: updatedFund,
+                ledgerEntry: {
+                    id: ledgerEntry.id,
+                    amount: ledgerEntry.amount,
+                    balanceAfter: ledgerEntry.balanceAfter,
+                    note: ledgerEntry.note
+                },
+                previousBalance: currentBalance,
+                newBalance: balanceAfter
+            }
+        });
+    } catch (error) {
+        console.error('Approve Event Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi duyệt event'
+        });
+    }
+};
+
+/**
+ * Từ chối event (Treasurer hoặc Admin)
+ */
+exports.rejectEvent = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { reason } = req.body;
+        const reviewerId = req.userId;
+
+        if (!reason || reason.trim() === '') {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp lý do từ chối'
+            });
+        }
+
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            include: {
+                club: true,
+                fundRequests: {
+                    include: { items: true },
+                    orderBy: { createdAt: 'desc' }
+                }
+            }
+        });
+
+        if (!event) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy event'
+            });
+        }
+
+        // Chỉ treasurer hoặc admin được từ chối
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: event.clubId,
+                userId: reviewerId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới được từ chối event'
+            });
+        }
+
+        if (event.approvalStatus !== 'PENDING') {
+            return res.status(400).json({
+                success: false,
+                message: 'Event đã được xử lý trước đó'
+            });
+        }
+
+        const fundRequest = event.fundRequests?.[0];
+        if (!fundRequest || fundRequest.status !== 'PENDING') {
+            return res.status(400).json({
+                success: false,
+                message: 'Không tìm thấy fund request chờ duyệt'
+            });
+        }
+
+        const [updatedFund, updatedEvent] = await prisma.$transaction([
+            prisma.fundRequest.update({
+                where: { id: fundRequest.id },
+                data: {
+                    status: 'REJECTED',
+                    approvedById: reviewerId,
+                    reviewedAt: new Date(),
+                    rejectReason: reason.trim()
+                },
+                include: { items: true }
+            }),
+            prisma.event.update({
+                where: { id: eventId },
+                data: {
+                    approvalStatus: 'REJECTED',
+                    approvalById: reviewerId,
+                    approvalAt: new Date(),
+                    isActive: false
+                }
+            })
+        ]);
+
+        res.status(200).json({
+            success: true,
+            message: 'Từ chối event thành công',
+            data: {
+                event: updatedEvent,
+                fundRequest: updatedFund
+            }
+        });
+    } catch (error) {
+        console.error('Reject Event Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi từ chối event'
+        });
+    }
+};
+
+/**
+ * Lấy danh sách events chờ duyệt quỹ của club (Treasurer hoặc Admin)
+ */
+exports.getPendingEvents = async (req, res) => {
+    try {
+        const { clubId } = req.query;
+        const userId = req.userId;
+
+        if (!clubId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp clubId'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền xem danh sách events chờ duyệt'
+            });
+        }
+
+        // Lấy events chờ duyệt của club
+        const events = await prisma.event.findMany({
+            where: {
+                clubId: clubId,
+                approvalStatus: 'PENDING'
+            },
+            include: {
+                club: {
+                    select: {
+                        id: true,
+                        name: true,
+                        slug: true,
+                        logoUrl: true
+                    }
+                },
+                createdBy: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true
+                    }
+                },
+                fundRequests: {
+                    include: {
+                        items: true
+                    },
+                    orderBy: {
+                        createdAt: 'desc'
+                    }
+                },
+                _count: {
+                    select: {
+                        tickets: {
+                            where: {
+                                status: { in: ['PAID', 'RESERVED', 'USED'] }
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: {
+                createdAt: 'desc'
+            }
+        });
+
+        // Tính số dư quỹ hiện tại
+        const incomeAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: clubId, type: 'INCOME' },
+            _sum: { amount: true }
+        });
+        const expenseAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: clubId, type: 'EXPENSE' },
+            _sum: { amount: true }
+        });
+        const balance = (incomeAgg._sum.amount || 0) - (expenseAgg._sum.amount || 0);
+
+        // Chuẩn hóa fundRequests: đổi amount -> totalAmount
+        const mappedEvents = events.map(ev => ({
+            ...ev,
+            fundRequests: ev.fundRequests?.map(fr => {
+                const { amount, ...rest } = fr;
+                return {
+                    ...rest,
+                    totalAmount: amount
+                };
+            })
+        }));
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy danh sách events chờ duyệt thành công',
+            data: {
+                events: mappedEvents,
+                clubBalance: balance,
+                count: events.length
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Pending Events Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy danh sách events chờ duyệt'
+        });
+    }
+};
+
+/**
+ * Tạo payment link cho fund request (Treasurer only)
+ */
+exports.createFundRequestPayment = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const userId = req.userId;
+
+        // 1. Tìm event và fund request
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            include: {
+                club: true,
+                fundRequests: {
+                    include: {
+                        items: true
+                    },
+                    orderBy: {
+                        createdAt: 'desc'
+                    }
+                }
+            }
+        });
+
+        if (!event) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy event'
+            });
+        }
+
+        // 2. Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: event.clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền tạo payment link cho fund request'
+            });
+        }
+
+        // 3. Kiểm tra event status
+        if (event.approvalStatus !== 'PENDING') {
+            return res.status(400).json({
+                success: false,
+                message: 'Event không ở trạng thái chờ duyệt'
+            });
+        }
+
+        const fundRequest = event.fundRequests?.[0];
+        if (!fundRequest || fundRequest.status !== 'PENDING') {
+            return res.status(400).json({
+                success: false,
+                message: 'Không tìm thấy fund request chờ duyệt'
+            });
+        }
+
+        // 4. Kiểm tra số dư quỹ (bắt buộc: nếu thiếu thì không tạo payment)
+        const incomeAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: event.clubId, type: 'INCOME' },
+            _sum: { amount: true }
+        });
+        const expenseAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: event.clubId, type: 'EXPENSE' },
+            _sum: { amount: true }
+        });
+        const balance = (incomeAgg._sum.amount || 0) - (expenseAgg._sum.amount || 0);
+
+        if (balance < fundRequest.amount) {
+            return res.status(400).json({
+                success: false,
+                message: `Quỹ hiện có ${balance} VND, thiếu ${fundRequest.amount - balance} VND so với yêu cầu. Không thể tạo payment link.`
+            });
+        }
+
+        // 5. Lấy thông tin treasurer
+        const treasurerUser = await prisma.user.findUnique({
+            where: { id: userId }
+        });
+
+        // 6. Tạo orderCode
+        const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+
+        // 7. Tạo transaction để track payment
+        const transaction = await prisma.transaction.create({
+            data: {
+                clubId: event.clubId,
+                userId: userId,
+                type: 'FUND_REQ',
+                amount: fundRequest.amount,
+                currency: 'VND',
+                paymentMethod: 'PAYOS',
+                status: 'PENDING',
+                paymentReference: orderCode.toString()
+            }
+        });
+
+        // 8. Tạo payment link từ PayOS
+        let paymentResult;
+        try {
+            paymentResult = await payosService.createPaymentLink({
+                orderCode: orderCode,
+                amount: fundRequest.amount,
+                description: `Thanh toán quỹ: ${fundRequest.title}`,
+                buyerName: treasurerUser.fullName || treasurerUser.email,
+                buyerEmail: treasurerUser.email,
+                buyerPhone: treasurerUser.phone || '',
+                items: fundRequest.items.map(item => ({
+                    name: item.name,
+                    quantity: 1,
+                    price: item.amount
+                })),
+                expireMinutes: 60 // Hết hạn sau 60 phút
+            });
+        } catch (payosError) {
+            // Nếu PayOS API fail, update transaction status
+            console.error('PayOS API Error:', payosError);
+            await prisma.transaction.update({
+                where: { id: transaction.id },
+                data: {
+                    status: 'FAILED',
+                    payosPayload: JSON.stringify({
+                        error: payosError.message,
+                        orderCode: orderCode
+                    })
+                }
+            });
+
+            throw new Error(`Không thể tạo payment link từ PayOS: ${payosError.message}`);
+        }
+
+        // 9. Generate QR code từ payment link
+        let qrCodeDataUrl = null;
+        try {
+            qrCodeDataUrl = await QRCode.toDataURL(paymentResult.paymentLink);
+        } catch (qrError) {
+            console.error('Error generating QR code:', qrError);
+        }
+
+        // 10. Cập nhật transaction với PayOS data
+        await prisma.transaction.update({
+            where: { id: transaction.id },
+            data: {
+                qr_code: qrCodeDataUrl,
+                time_out: paymentResult.expiredAt,
+                payosPayload: JSON.stringify({
+                    orderCode: orderCode,
+                    checkoutUrl: paymentResult.paymentLink,
+                    fundRequestId: fundRequest.id,
+                    eventId: eventId,
+                    ...paymentResult.data
+                })
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: 'Tạo payment link thành công',
+            data: {
+                eventId: eventId,
+                eventTitle: event.title,
+                fundRequestId: fundRequest.id,
+                fundRequestTitle: fundRequest.title,
+                amount: fundRequest.amount,
+                clubBalance: balance,
+                transactionId: transaction.id,
+                paymentLink: paymentResult.paymentLink,
+                qrCode: qrCodeDataUrl,
+                timeOut: paymentResult.expiredAt,
+                orderCode: orderCode,
+                note: balance < fundRequest.amount 
+                    ? `Cảnh báo: Quỹ hiện có ${balance} VND, thiếu ${fundRequest.amount - balance} VND so với yêu cầu`
+                    : 'Quỹ đủ để thanh toán'
+            }
+        });
+
+    } catch (error) {
+        console.error('Create Fund Request Payment Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi tạo payment link'
         });
     }
 };

@@ -8,38 +8,48 @@ if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Cấu hình multer để lưu file Excel
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadsDir); // Thư mục lưu file tạm
-    },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, 'excel-' + uniqueSuffix + path.extname(file.originalname));
-    }
+function createUploader({ prefix, exts, maxSizeMB }) {
+    const storage = multer.diskStorage({
+        destination: function (req, file, cb) {
+            cb(null, uploadsDir);
+        },
+        filename: function (req, file, cb) {
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            cb(null, `${prefix}-${uniqueSuffix}${path.extname(file.originalname)}`);
+        }
+    });
+
+    const fileFilter = (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (exts.includes(ext)) return cb(null, true);
+        cb(new Error(`File không hợp lệ. Chỉ chấp nhận: ${exts.join(', ')}`), false);
+    };
+
+    return multer({
+        storage,
+        fileFilter,
+        limits: { fileSize: maxSizeMB * 1024 * 1024 }
+    });
+}
+
+// Upload Excel (giữ tương thích cho club import)
+const uploadExcel = createUploader({
+    prefix: 'excel',
+    exts: ['.xlsx', '.xls'],
+    maxSizeMB: 5
 });
 
-// Filter chỉ cho phép file Excel
-const fileFilter = (req, file, cb) => {
-    const allowedTypes = ['.xlsx', '.xls'];
-    const ext = path.extname(file.originalname).toLowerCase();
-
-    if (allowedTypes.includes(ext)) {
-        cb(null, true);
-    } else {
-        cb(new Error('Chỉ chấp nhận file Excel (.xlsx, .xls)'), false);
-    }
-};
-
-const upload = multer({
-    storage: storage,
-    fileFilter: fileFilter,
-    limits: {
-        fileSize: 5 * 1024 * 1024 // Giới hạn 5MB
-    }
+// Upload hình ảnh (proof)
+const uploadImage = createUploader({
+    prefix: 'img',
+    exts: ['.png', '.jpg', '.jpeg', '.webp'],
+    maxSizeMB: 5
 });
 
-module.exports = upload;
+// Giữ compat: default export vẫn là uploadExcel
+module.exports = uploadExcel;
+module.exports.uploadExcel = uploadExcel;
+module.exports.uploadImage = uploadImage;
 
 
 

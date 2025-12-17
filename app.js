@@ -19,6 +19,8 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(bodyParser.json())
 app.use(express.static(path.join(__dirname, 'public')));
+// Serve static uploads (images/proof)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.use(cors());
 
