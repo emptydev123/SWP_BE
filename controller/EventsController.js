@@ -386,7 +386,7 @@ exports.getAllEvents = async (req, res) => {
         // Build where clause
         const where = {};
         const now = new Date();
-        
+
         // Chỉ trả về events đã duyệt quỹ, trừ khi yêu cầu includePending
         if (includePending !== 'true') {
             where.approvalStatus = 'APPROVED';
@@ -399,7 +399,7 @@ exports.getAllEvents = async (req, res) => {
             // If endTime is null, use startTime as the end time
             where.OR = [
                 { endTime: { gte: now } }, // Has endTime and it's in the future
-                { 
+                {
                     AND: [
                         { endTime: null }, // No endTime
                         { startTime: { gte: now } } // But startTime is in the future
@@ -429,11 +429,11 @@ exports.getAllEvents = async (req, res) => {
         // Xử lý logic theo từng trường hợp filter type
         // Note: We need to combine type filters with endTime filter using AND
         const typeFilters = {};
-        
+
         if (normalizedType === 'INTERNAL') {
             // Filter INTERNAL: chỉ hiển thị INTERNAL events của clubs user là member
             typeFilters.type = 'INTERNAL';
-            
+
             // Nếu filter type=INTERNAL và có clubId nhưng user không phải member → trả về rỗng
             if (clubId && !userClubIds.includes(clubId)) {
                 return res.status(200).json({
@@ -442,7 +442,7 @@ exports.getAllEvents = async (req, res) => {
                     data: []
                 });
             }
-            
+
             if (clubId) {
                 // Có clubId: chỉ hiển thị INTERNAL của club đó (user đã là member vì đã check ở trên)
                 typeFilters.clubId = clubId;
@@ -477,25 +477,25 @@ exports.getAllEvents = async (req, res) => {
 
         // Combine all filters: endTime filter (if exists) + type/club filters + pricing filter
         const allFilters = [];
-        
+
         // Add endTime filter if exists
         if (where.OR) {
             allFilters.push({ OR: where.OR });
             delete where.OR;
         }
-        
+
         // Add type/club filters
         if (Object.keys(typeFilters).length > 0) {
             allFilters.push(typeFilters);
         }
-        
+
         // Add other filters (pricingType, etc.)
         Object.keys(where).forEach(key => {
             if (where[key] !== undefined) {
                 allFilters.push({ [key]: where[key] });
             }
         });
-        
+
         // Build final where clause
         if (allFilters.length === 1) {
             Object.assign(where, allFilters[0]);
@@ -839,7 +839,7 @@ exports.updateEvent = async (req, res) => {
         // 4. Validate format, onlineLink và location nếu có thay đổi
         let eventFormat = undefined;
         const finalFormat = format !== undefined ? format.toUpperCase() : event.format;
-        
+
         if (format !== undefined) {
             if (!['ONLINE', 'OFFLINE'].includes(format.toUpperCase())) {
                 return res.status(400).json({
@@ -942,7 +942,7 @@ exports.updateEvent = async (req, res) => {
         if (startTime !== undefined) updateData.startTime = startTime ? new Date(startTime) : null;
         if (endTime !== undefined) updateData.endTime = endTime ? new Date(endTime) : null;
         const finalFormatForUpdate = eventFormat !== undefined ? eventFormat : event.format;
-        
+
         if (eventFormat !== undefined) {
             updateData.format = eventFormat;
             // Nếu format thay đổi sang ONLINE, set location = null và đảm bảo có onlineLink
@@ -962,7 +962,7 @@ exports.updateEvent = async (req, res) => {
                 }
             }
         }
-        
+
         if (location !== undefined) {
             // Nếu format là OFFLINE, lưu location, nếu ONLINE thì set null
             if (finalFormatForUpdate === 'OFFLINE') {
@@ -971,7 +971,7 @@ exports.updateEvent = async (req, res) => {
                 updateData.location = null;
             }
         }
-        
+
         if (onlineLink !== undefined) {
             // Nếu format là ONLINE, lưu onlineLink, nếu OFFLINE thì set null
             if (finalFormatForUpdate === 'ONLINE') {
@@ -1207,7 +1207,7 @@ exports.registerEvent = async (req, res) => {
         if (event.pricingType === 'FREE') {
             // FREE: Tạo ticket ngay
             const tickets = [];
-            
+
             for (let i = 0; i < quantity; i++) {
                 const holderName = purchaser?.fullName || purchaser?.email || 'Người tham dự';
                 const holderEmail = purchaser?.email || null;
@@ -1352,7 +1352,7 @@ exports.registerEvent = async (req, res) => {
                 const ticket = await prisma.ticket.create({
                     data: ticketData
                 });
-                
+
                 // Tạo EventRegistration cho user nếu chưa có (tránh trùng eventId + userId)
                 if (i === 0) {
                     const existingRegistration = await prisma.eventRegistration.findFirst({
@@ -1374,7 +1374,7 @@ exports.registerEvent = async (req, res) => {
                         });
                     }
                 }
-                
+
                 tickets.push(ticket);
             }
 
@@ -1411,7 +1411,7 @@ exports.registerEvent = async (req, res) => {
             } catch (payosError) {
                 // Nếu PayOS API fail, update transaction và tickets status
                 console.error('PayOS API Error:', payosError);
-                
+
                 // Update transaction status thành FAILED
                 await prisma.transaction.update({
                     where: { id: transaction.id },
@@ -1609,9 +1609,9 @@ exports.getEventParticipants = async (req, res) => {
                 const email = reg.user.email?.toLowerCase() || '';
                 const fullName = reg.user.fullName?.toLowerCase() || '';
                 const studentCode = reg.user.studentCode?.toLowerCase() || '';
-                return email.includes(searchLower) || 
-                       fullName.includes(searchLower) || 
-                       studentCode.includes(searchLower);
+                return email.includes(searchLower) ||
+                    fullName.includes(searchLower) ||
+                    studentCode.includes(searchLower);
             });
         }
 
@@ -2220,7 +2220,7 @@ exports.createFundRequestPayment = async (req, res) => {
                 qrCode: qrCodeDataUrl,
                 timeOut: paymentResult.expiredAt,
                 orderCode: orderCode,
-                note: balance < fundRequest.amount 
+                note: balance < fundRequest.amount
                     ? `Cảnh báo: Quỹ hiện có ${balance} VND, thiếu ${fundRequest.amount - balance} VND so với yêu cầu`
                     : 'Quỹ đủ để thanh toán'
             }
@@ -2231,6 +2231,183 @@ exports.createFundRequestPayment = async (req, res) => {
         res.status(500).json({
             success: false,
             message: error.message || 'Lỗi khi tạo payment link'
+        });
+    }
+};
+
+/**
+ * Gửi hoặc cập nhật feedback cho event
+ * Điều kiện:
+ *  - Đã đăng ký event (có event_registrations)
+ *  - Đã check-in (checkedInAt != null)
+ *  - Event đã diễn ra (sau startTime) và đã kết thúc nếu có endTime
+ */
+exports.createEventFeedback = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { rating, comment } = req.body;
+        const userId = req.userId;
+
+        // Validate rating
+        const numericRating = Number(rating);
+        if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
+            return res.status(400).json({
+                success: false,
+                message: 'rating phải là số nguyên từ 1 đến 5'
+            });
+        }
+
+        // Lấy thông tin event
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            select: { id: true, startTime: true, endTime: true, title: true }
+        });
+
+        if (!event) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy event'
+            });
+        }
+
+        if (!event.startTime) {
+            return res.status(400).json({
+                success: false,
+                message: 'Event chưa có thời gian bắt đầu, không thể feedback'
+            });
+        }
+
+        const now = new Date();
+        const eventHasStarted = now >= new Date(event.startTime);
+        const eventHasEnded = event.endTime ? now >= new Date(event.endTime) : eventHasStarted;
+
+        if (!eventHasStarted) {
+            return res.status(400).json({
+                success: false,
+                message: 'Event chưa bắt đầu, vui lòng feedback sau khi sự kiện diễn ra'
+            });
+        }
+
+        // Nếu có endTime, yêu cầu event đã kết thúc
+        if (event.endTime && !eventHasEnded) {
+            return res.status(400).json({
+                success: false,
+                message: 'Event chưa kết thúc, vui lòng feedback sau khi sự kiện kết thúc'
+            });
+        }
+
+        // Kiểm tra đăng ký và check-in
+        const registration = await prisma.eventRegistration.findFirst({
+            where: { eventId, userId },
+            select: { id: true, checkedInAt: true, registeredAt: true }
+        });
+
+        if (!registration) {
+            return res.status(403).json({
+                success: false,
+                message: 'Bạn chưa đăng ký sự kiện này nên không thể feedback'
+            });
+        }
+
+        if (!registration.checkedInAt) {
+            return res.status(403).json({
+                success: false,
+                message: 'Bạn cần check-in sự kiện trước khi feedback'
+            });
+        }
+
+        // Tạo mới feedback (không cho sửa lại nếu đã đánh giá)
+        const existingFeedback = await prisma.feedback.findFirst({
+            where: { eventId, userId }
+        });
+
+        if (existingFeedback) {
+            return res.status(400).json({
+                success: false,
+                message: 'Bạn đã đánh giá sự kiện này rồi, không thể đánh giá lại'
+            });
+        }
+
+        const savedFeedback = await prisma.feedback.create({
+            data: {
+                eventId,
+                userId,
+                rating: numericRating,
+                comment: comment?.trim() || null
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: 'Ghi nhận feedback thành công',
+            data: savedFeedback
+        });
+    } catch (error) {
+        console.error('Create Event Feedback Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lưu feedback'
+        });
+    }
+};
+
+/**
+ * Lấy danh sách feedback của một event
+ */
+exports.getEventFeedbacks = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            select: { id: true, title: true }
+        });
+
+        if (!event) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy event'
+            });
+        }
+
+        const [feedbacks, stats] = await Promise.all([
+            prisma.feedback.findMany({
+                where: { eventId },
+                orderBy: { createdAt: 'desc' },
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            fullName: true,
+                            email: true,
+                            avatarUrl: true
+                        }
+                    }
+                }
+            }),
+            prisma.feedback.aggregate({
+                where: { eventId },
+                _avg: { rating: true },
+                _count: { _all: true }
+            })
+        ]);
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy feedback thành công',
+            data: {
+                eventId: event.id,
+                eventTitle: event.title,
+                total: stats._count._all || 0,
+                averageRating: stats._avg.rating ? Number(stats._avg.rating.toFixed(2)) : null,
+                feedbacks
+            }
+        });
+    } catch (error) {
+        console.error('Get Event Feedbacks Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy feedback'
         });
     }
 };
