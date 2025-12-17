@@ -30,14 +30,21 @@ app.use('/api', routes)
 // swagger
 swaggerDocs(app)
 
-// Start job để tự động cancel expired transactions (chạy mỗi 1 phút)
+// Start job định kỳ
 if (process.env.NODE_ENV !== 'test') {
   const { cancelExpiredTransactions } = require('./jobs/cancelExpiredTransactions');
+  const { completeFinishedEvents } = require('./jobs/completeFinishedEvents');
   console.log('[App] Đã khởi động job cancel expired transactions (chạy mỗi 1 phút)');
   // Chạy ngay lần đầu
   cancelExpiredTransactions();
   // Sau đó chạy mỗi 1 phút
   setInterval(cancelExpiredTransactions, 60 * 1000); // 60 giây = 1 phút
+
+  console.log('[App] Đã khởi động job complete finished events (chạy mỗi 5 phút)');
+  // Chạy ngay lần đầu
+  completeFinishedEvents();
+  // Sau đó chạy mỗi 5 phút
+  setInterval(completeFinishedEvents, 5 * 60 * 1000);
 }
 
 // catch 404 and forward to error handler
