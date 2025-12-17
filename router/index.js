@@ -7,6 +7,7 @@ const transactionRouter = require('../routes/transactions');
 const eventsRouter = require('../routes/events');
 const ticketsRouter = require('../routes/tickets');
 const checkinRouter = require('../routes/checkin');
+const adminRouter = require('../routes/admin');
 
 router.use('/users', userRouter);
 router.use('/clubs', clubRouter);
@@ -14,5 +15,6 @@ router.use('/transactions', transactionRouter);
 router.use('/events', eventsRouter);
 router.use('/tickets', ticketsRouter);
 router.use('/checkin', checkinRouter);
+router.use('/admin', adminRouter);
 
 module.exports = router
