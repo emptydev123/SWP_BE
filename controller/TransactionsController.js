@@ -207,7 +207,7 @@ exports.createPayment = async (req, res) => {
 
 /**
  * Helper function: Xử lý payment cho MEMBERSHIP
- * Tự động tìm membership PENDING_PAYMENT của user trong club
+ * Tự động tìm transaction PENDING (tạo khi leader approve) hoặc membership PENDING_PAYMENT
  */
 async function handleMembershipPayment(req, res, clubId, userId) {
     try {
@@ -239,7 +239,83 @@ async function handleMembershipPayment(req, res, clubId, userId) {
             });
         }
 
-        // 4. Tìm membership PENDING_PAYMENT của user trong club này
+        // 4A. Tìm transaction PENDING đã tạo khi leader approve (flow mới)
+        let existingTransaction = await prisma.transaction.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'PENDING',
+                type: 'MEMBERSHIP'
+            }
+        });
+
+        if (existingTransaction) {
+            // Đã có transaction PENDING, trả về payment link
+            const payosData = existingTransaction.payosPayload ? JSON.parse(existingTransaction.payosPayload) : null;
+            if (payosData && payosData.checkoutUrl) {
+                return res.status(200).json({
+                    success: true,
+                    message: 'Đã có giao dịch đang chờ thanh toán',
+                    data: {
+                        transactionId: existingTransaction.id,
+                        paymentLink: payosData.checkoutUrl,
+                        qrCode: payosData.qrCode || null,
+                        amount: existingTransaction.amount,
+                        orderCode: parseInt(existingTransaction.paymentReference) || null
+                    }
+                });
+            }
+
+            // Transaction tồn tại nhưng không có checkoutUrl -> tạo lại payment link với orderCode MỚI
+            // (vì orderCode cũ có thể đã tồn tại trong PayOS)
+            try {
+                const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
+
+                const paymentResult = await payosService.createPaymentLink({
+                    orderCode: orderCode,
+                    amount: club.membershipFeeAmount,
+                    description: `Phí CLB: ${club.name}`,
+                    buyerName: req.user?.fullName || req.user?.email || 'User',
+                    buyerEmail: req.user?.email,
+                    buyerPhone: null,
+                    items: [{
+                        name: `Phí gia nhập CLB ${club.name}`,
+                        quantity: 1,
+                        price: club.membershipFeeAmount
+                    }],
+                    expireMinutes: 15
+                });
+
+                // Update transaction với payosPayload mới
+                await prisma.transaction.update({
+                    where: { id: existingTransaction.id },
+                    data: {
+                        payosPayload: JSON.stringify(paymentResult),
+                        paymentReference: orderCode.toString()
+                    }
+                });
+
+                return res.status(200).json({
+                    success: true,
+                    message: 'Tạo payment link thành công',
+                    data: {
+                        transactionId: existingTransaction.id,
+                        paymentLink: paymentResult.paymentLink,
+                        qrCode: paymentResult.qrCode || null,
+                        amount: club.membershipFeeAmount,
+                        orderCode: orderCode
+                    }
+                });
+            } catch (payosError) {
+                console.error('PayOS error:', payosError);
+                return res.status(500).json({
+                    success: false,
+                    message: 'Không thể tạo payment link'
+                });
+            }
+        }
+
+        // 4B. Fallback: Tìm membership PENDING_PAYMENT (flow cũ)
         const membership = await prisma.clubMembership.findFirst({
             where: {
                 clubId: clubId,
@@ -253,14 +329,92 @@ async function handleMembershipPayment(req, res, clubId, userId) {
         });
 
         if (!membership) {
+            // Kiểm tra xem user có application APPROVED không
+            const approvedApp = await prisma.clubApplication.findFirst({
+                where: {
+                    clubId: clubId,
+                    userId: userId,
+                    status: 'APPROVED'
+                }
+            });
+
+            if (approvedApp) {
+                // Application đã được duyệt nhưng không có transaction PENDING
+                // Có thể transaction đã hết hạn/bị cancel -> Tạo transaction mới
+                console.log('[handleMembershipPayment] Creating new transaction for approved application');
+
+                try {
+                    // Tạo orderCode unique hơn để tránh trùng với PayOS
+                    const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
+
+                    // Tạo transaction mới
+                    const newTransaction = await prisma.transaction.create({
+                        data: {
+                            clubId: clubId,
+                            userId: userId,
+                            type: 'MEMBERSHIP',
+                            referenceMembershipId: null,
+                            amount: club.membershipFeeAmount,
+                            currency: 'VND',
+                            paymentMethod: 'PAYOS',
+                            status: 'PENDING',
+                            paymentReference: orderCode.toString()
+                        }
+                    });
+
+                    // Tạo payment link
+                    const user = await prisma.user.findUnique({ where: { id: userId } });
+                    const paymentResult = await payosService.createPaymentLink({
+                        orderCode: orderCode,
+                        amount: club.membershipFeeAmount,
+                        description: `Phí CLB: ${club.name}`,
+                        buyerName: user?.fullName || user?.email || 'User',
+                        buyerEmail: user?.email,
+                        buyerPhone: null,
+                        items: [{
+                            name: `Phí gia nhập CLB ${club.name}`,
+                            quantity: 1,
+                            price: club.membershipFeeAmount
+                        }],
+                        expireMinutes: 15
+                    });
+
+                    // Update transaction với payosPayload
+                    await prisma.transaction.update({
+                        where: { id: newTransaction.id },
+                        data: {
+                            payosPayload: JSON.stringify(paymentResult)
+                        }
+                    });
+
+                    return res.status(200).json({
+                        success: true,
+                        message: 'Tạo payment link thành công',
+                        data: {
+                            transactionId: newTransaction.id,
+                            paymentLink: paymentResult.paymentLink,
+                            qrCode: paymentResult.qrCode || null,
+                            amount: club.membershipFeeAmount,
+                            orderCode: orderCode
+                        }
+                    });
+                } catch (payosError) {
+                    console.error('PayOS error:', payosError);
+                    return res.status(500).json({
+                        success: false,
+                        message: 'Không thể tạo payment link. Vui lòng thử lại.'
+                    });
+                }
+            }
+
             return res.status(404).json({
                 success: false,
-                message: 'Không tìm thấy membership đang chờ thanh toán. Có thể bạn chưa được duyệt hoặc đã thanh toán rồi.'
+                message: 'Không tìm thấy yêu cầu thanh toán. Có thể bạn chưa được duyệt hoặc đã thanh toán rồi.'
             });
         }
 
-        // 5. Kiểm tra xem đã có transaction PENDING chưa
-        const existingTransaction = await prisma.transaction.findFirst({
+        // 5. Kiểm tra xem đã có transaction PENDING chưa (cho membership cũ)
+        existingTransaction = await prisma.transaction.findFirst({
             where: {
                 referenceMembershipId: membership.id,
                 status: 'PENDING',
@@ -303,7 +457,7 @@ async function handleMembershipPayment(req, res, clubId, userId) {
         // 7. Tạo orderCode từ transaction ID (convert UUID to number)
         // PayOS yêu cầu orderCode là số nguyên dương, unique
         // Sử dụng timestamp + random để tạo unique number
-        const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+        const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
 
         // 8. Tạo payment link từ PayOS
         // Lưu ý: Description sẽ tự động được truncate xuống 25 ký tự trong payosService
@@ -469,7 +623,7 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
         });
 
         // 10. Tạo orderCode
-        const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
+        const orderCode = parseInt(Date.now().toString().slice(-8) + Math.floor(Math.random() * 10000).toString().padStart(4, '0'));
 
         // 11. Tạo payment link từ PayOS
         // Lưu ý: Description sẽ tự động được truncate xuống 25 ký tự trong payosService
