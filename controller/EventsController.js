@@ -713,13 +713,6 @@ exports.updateEvent = async (req, res) => {
             });
         }
 
-        if (event.approvalStatus !== 'PENDING' && req.user?.auth_role !== 'ADMIN') {
-            return res.status(400).json({
-                success: false,
-                message: 'Event đã được duyệt/từ chối, không thể chỉnh sửa'
-            });
-        }
-
         // 2.1. Kiểm tra số vé đã bán/đăng ký để quyết định field nào được phép update
         const soldTicketsCount = await prisma.ticket.count({
             where: {
