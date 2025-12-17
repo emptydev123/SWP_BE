@@ -103,32 +103,32 @@ exports.checkinByQRCode = async (req, res) => {
             });
         }
 
-        // 6. Kiểm tra thời gian check-in (phải từ 30 phút trước khi event bắt đầu)
-        if (ticket.event.startTime) {
-            const now = new Date();
-            const startTime = new Date(ticket.event.startTime);
-            const checkinStartTime = new Date(startTime.getTime() - 30 * 60 * 1000); // 30 phút trước
-            
-            // Kiểm tra nếu thời gian hiện tại chưa đến 30 phút trước khi event bắt đầu
-            if (now < checkinStartTime) {
-                const minutesUntilCheckin = Math.ceil((checkinStartTime - now) / (1000 * 60));
-                return res.status(400).json({
-                    success: false,
-                    message: `Chưa đến thời gian check-in. Check-in sẽ mở từ ${checkinStartTime.toLocaleString('vi-VN')} (30 phút trước khi event bắt đầu). Còn ${minutesUntilCheckin} phút nữa.`
-                });
-            }
-            
-            // Kiểm tra nếu event đã kết thúc
-            if (ticket.event.endTime) {
-                const endTime = new Date(ticket.event.endTime);
-                if (now > endTime) {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Event đã kết thúc. Không thể check-in.'
-                    });
-                }
-            }
-        }
+        // 6. [DISABLED FOR TESTING] Kiểm tra thời gian check-in (phải từ 30 phút trước khi event bắt đầu)
+        // if (ticket.event.startTime) {
+        //     const now = new Date();
+        //     const startTime = new Date(ticket.event.startTime);
+        //     const checkinStartTime = new Date(startTime.getTime() - 30 * 60 * 1000); // 30 phút trước
+        //     
+        //     // Kiểm tra nếu thời gian hiện tại chưa đến 30 phút trước khi event bắt đầu
+        //     if (now < checkinStartTime) {
+        //         const minutesUntilCheckin = Math.ceil((checkinStartTime - now) / (1000 * 60));
+        //         return res.status(400).json({
+        //             success: false,
+        //             message: `Chưa đến thời gian check-in. Check-in sẽ mở từ ${checkinStartTime.toLocaleString('vi-VN')} (30 phút trước khi event bắt đầu). Còn ${minutesUntilCheckin} phút nữa.`
+        //         });
+        //     }
+        //     
+        //     // Kiểm tra nếu event đã kết thúc
+        //     if (ticket.event.endTime) {
+        //         const endTime = new Date(ticket.event.endTime);
+        //         if (now > endTime) {
+        //             return res.status(400).json({
+        //                 success: false,
+        //                 message: 'Event đã kết thúc. Không thể check-in.'
+        //             });
+        //         }
+        //     }
+        // }
 
         // 7. Kiểm tra đã check-in chưa
         if (ticket.checkins.length > 0) {
@@ -331,32 +331,32 @@ exports.checkinByEmail = async (req, res) => {
             });
         }
 
-        // 6. Kiểm tra thời gian check-in (phải từ 30 phút trước khi event bắt đầu)
-        if (event.startTime) {
-            const now = new Date();
-            const startTime = new Date(event.startTime);
-            const checkinStartTime = new Date(startTime.getTime() - 30 * 60 * 1000); // 30 phút trước
-            
-            // Kiểm tra nếu thời gian hiện tại chưa đến 30 phút trước khi event bắt đầu
-            if (now < checkinStartTime) {
-                const minutesUntilCheckin = Math.ceil((checkinStartTime - now) / (1000 * 60));
-                return res.status(400).json({
-                    success: false,
-                    message: `Chưa đến thời gian check-in. Check-in sẽ mở từ ${checkinStartTime.toLocaleString('vi-VN')} (30 phút trước khi event bắt đầu). Còn ${minutesUntilCheckin} phút nữa.`
-                });
-            }
-            
-            // Kiểm tra nếu event đã kết thúc
-            if (event.endTime) {
-                const endTime = new Date(event.endTime);
-                if (now > endTime) {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Event đã kết thúc. Không thể check-in.'
-                    });
-                }
-            }
-        }
+        // 6. [DISABLED FOR TESTING] Kiểm tra thời gian check-in (phải từ 30 phút trước khi event bắt đầu)
+        // if (event.startTime) {
+        //     const now = new Date();
+        //     const startTime = new Date(event.startTime);
+        //     const checkinStartTime = new Date(startTime.getTime() - 30 * 60 * 1000); // 30 phút trước
+        //     
+        //     // Kiểm tra nếu thời gian hiện tại chưa đến 30 phút trước khi event bắt đầu
+        //     if (now < checkinStartTime) {
+        //         const minutesUntilCheckin = Math.ceil((checkinStartTime - now) / (1000 * 60));
+        //         return res.status(400).json({
+        //             success: false,
+        //             message: `Chưa đến thời gian check-in. Check-in sẽ mở từ ${checkinStartTime.toLocaleString('vi-VN')} (30 phút trước khi event bắt đầu). Còn ${minutesUntilCheckin} phút nữa.`
+        //         });
+        //     }
+        //     
+        //     // Kiểm tra nếu event đã kết thúc
+        //     if (event.endTime) {
+        //         const endTime = new Date(event.endTime);
+        //         if (now > endTime) {
+        //             return res.status(400).json({
+        //                 success: false,
+        //                 message: 'Event đã kết thúc. Không thể check-in.'
+        //             });
+        //         }
+        //     }
+        // }
 
         // 7. Kiểm tra đã check-in chưa
         if (registration.checkedInAt) {
@@ -525,9 +525,9 @@ exports.getEventParticipants = async (req, res) => {
                 const email = reg.user.email?.toLowerCase() || '';
                 const fullName = reg.user.fullName?.toLowerCase() || '';
                 const studentCode = reg.user.studentCode?.toLowerCase() || '';
-                return email.includes(searchLower) || 
-                       fullName.includes(searchLower) || 
-                       studentCode.includes(searchLower);
+                return email.includes(searchLower) ||
+                    fullName.includes(searchLower) ||
+                    studentCode.includes(searchLower);
             });
         }
 
