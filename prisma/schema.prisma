@@ -35,6 +35,7 @@ model User {
   feedbacks            Feedback[]
   approvedFundRequests FundRequest[]       @relation("FundRequestApprover")
   createdFundRequests  FundRequest[]       @relation("FundRequestCreator")
+  approvedEvents       Event[]             @relation("EventApprovalUser")
   tickets              Ticket[]
   transactions         Transaction[]
 
@@ -124,6 +125,7 @@ model Event {
   id            String              @id @default(uuid())
   clubId        String              @map("club_id")
   createdById   String?             @map("created_by")
+  approvalById  String?             @map("approval_by")
   title         String
   description   String?
   type          EventType           @default(PUBLIC)
@@ -139,11 +141,14 @@ model Event {
   updatedAt     DateTime            @updatedAt @map("updated_at")
   format        EventFormat         @default(OFFLINE)
   onlineLink    String?             @map("online_link")
+  approvalAt    DateTime?           @map("approval_at")
+  approvalStatus EventApprovalStatus @default(PENDING) @map("approval_status")
   checkins      Checkin[]
   registrations EventRegistration[]
   staff         EventStaff[]
   club          Club                @relation(fields: [clubId], references: [id], onDelete: Cascade)
   createdBy     User?               @relation("EventCreator", fields: [createdById], references: [id])
+  approvalBy    User?               @relation("EventApprovalUser", fields: [approvalById], references: [id])
   feedbacks     Feedback[]
   fundRequests  FundRequest[]
   tickets       Ticket[]
@@ -221,12 +226,25 @@ model FundRequest {
   reviewedAt    DateTime?         @map("reviewed_at")
   disbursedAt   DateTime?         @map("disbursed_at")
   ledger        ClubLedger[]
+  items         FundRequestItem[]
   approvedBy    User?             @relation("FundRequestApprover", fields: [approvedById], references: [id])
   club          Club              @relation(fields: [clubId], references: [id], onDelete: Cascade)
   createdBy     User?             @relation("FundRequestCreator", fields: [createdById], references: [id])
   event         Event?            @relation(fields: [eventId], references: [id])
 
   @@map("fund_requests")
+}
+
+model FundRequestItem {
+  id            String      @id @default(uuid())
+  fundRequestId String      @map("fund_request_id")
+  name          String
+  description   String?
+  amount        Int
+  createdAt     DateTime    @default(now()) @map("created_at")
+  fundRequest   FundRequest @relation(fields: [fundRequestId], references: [id], onDelete: Cascade)
+
+  @@map("fund_request_items")
 }
 
 model ClubLedger {
@@ -357,6 +375,7 @@ enum TicketStatus {
 enum TransactionType {
   MEMBERSHIP
   EVENT_TICKET
+  FUND_REQ
   TOPUP
   REFUND
 }
@@ -385,4 +404,10 @@ enum LedgerType {
 enum EventFormat {
   ONLINE
   OFFLINE
+}
+
+enum EventApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }

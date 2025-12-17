@@ -116,6 +116,7 @@ class PayOSService {
                 success: true,
                 data: response, // Response từ PayOS package
                 paymentLink: response.checkoutUrl,
+                qrCode: response.qrCode || null, // QR code thanh toán trực tiếp từ PayOS (nếu có)
                 expiredAt: expiredAtDate // Convert từ Unix timestamp sang Date
             };
 
