@@ -2,10 +2,10 @@
   "name": "vehicle-be",
   "version": "0.0.0",
   "private": true,
-  "scripts": {
-    "start": "node ./bin/www",
-    "dev": "nodemon index.js"
-  },
+ "scripts": {
+  "start": "node ./bin/www",
+  "dev": "nodemon ./bin/www"
+},
   "dependencies": {
     "@payos/node": "^2.0.3",
     "@prisma/client": "^6.0.0",

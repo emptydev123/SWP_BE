@@ -48,7 +48,7 @@ const upload = require('../middlewares/upload');
  *       401:
  *         description: Unauthorized - Login required
  */
-router.get('/', 
+router.get('/',
     auth.authMiddleWare,
     eventsController.getAllEvents
 );
@@ -104,7 +104,7 @@ router.get('/pending',
  *       404:
  *         description: Event not found
  */
-router.get('/:eventId', 
+router.get('/:eventId',
     auth.authMiddleWare,
     eventsController.getEventDetail
 );
@@ -513,6 +513,77 @@ router.post('/:eventId/register',
 router.get('/:eventId/participants',
     auth.authMiddleWare,
     eventsController.getEventParticipants
+);
+
+/**
+ * @swagger
+ * /api/events/{eventId}/feedback:
+ *   post:
+ *     summary: Gửi hoặc cập nhật feedback cho sự kiện (yêu cầu đã đăng ký & check-in)
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: eventId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Event ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [rating]
+ *             properties:
+ *               rating:
+ *                 type: integer
+ *                 description: Thang điểm 1-5
+ *                 example: 5
+ *               comment:
+ *                 type: string
+ *                 description: Nội dung nhận xét (tùy chọn)
+ *     responses:
+ *       200:
+ *         description: Feedback đã được lưu (tạo mới hoặc cập nhật)
+ *       400:
+ *         description: Thiếu dữ liệu hoặc chưa đủ điều kiện feedback
+ *       403:
+ *         description: Không có quyền (chưa đăng ký / chưa check-in)
+ *       404:
+ *         description: Không tìm thấy event
+ */
+router.post('/:eventId/feedback',
+    auth.authMiddleWare,
+    eventsController.createEventFeedback
+);
+
+/**
+ * @swagger
+ * /api/events/{eventId}/feedback:
+ *   get:
+ *     summary: Lấy danh sách feedback của sự kiện
+ *     tags: [Events]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: eventId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Event ID
+ *     responses:
+ *       200:
+ *         description: Danh sách feedback
+ *       404:
+ *         description: Không tìm thấy event
+ */
+router.get('/:eventId/feedback',
+    auth.authMiddleWare,
+    eventsController.getEventFeedbacks
 );
 
 /**

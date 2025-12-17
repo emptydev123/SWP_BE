@@ -193,12 +193,12 @@ exports.reviewApplication = async (req, res) => {
 
         // Nếu là approve → kiểm tra club có tính phí không
         if (application.club.membershipFeeEnabled) {
-            // Club có tính phí - Tạo membership PENDING_PAYMENT và transaction
+            // Club có tính phí - CHỈ tạo transaction, KHÔNG tạo membership (sẽ tạo sau khi thanh toán thành công)
             try {
                 // Tạo orderCode trước (ngoài transaction)
                 const orderCode = parseInt(Date.now().toString().slice(-10)) + Math.floor(Math.random() * 1000);
 
-                // Bước 1: Tạo transaction trong DB (không gọi PayOS trong transaction)
+                // Bước 1: Update application và tạo transaction trong DB (không gọi PayOS trong transaction)
                 const result = await prisma.$transaction(async (tx) => {
                     // 1. Update application status
                     const updatedApplication = await tx.clubApplication.update({
@@ -211,47 +211,13 @@ exports.reviewApplication = async (req, res) => {
                         }
                     });
 
-                    // 2. Kiểm tra membership đã tồn tại chưa
-                    const existingMembership = await tx.clubMembership.findUnique({
-                        where: {
-                            clubId_userId: {
-                                clubId: clubId,
-                                userId: application.userId
-                            }
-                        }
-                    });
-
-                    let membership;
-                    if (existingMembership) {
-                        // Update membership với status PENDING_PAYMENT
-                        membership = await tx.clubMembership.update({
-                            where: { id: existingMembership.id },
-                            data: {
-                                role: 'MEMBER',
-                                status: 'PENDING_PAYMENT',
-                                assignedById: userId
-                            }
-                        });
-                    } else {
-                        // Tạo membership mới với status PENDING_PAYMENT
-                        membership = await tx.clubMembership.create({
-                            data: {
-                                clubId: clubId,
-                                userId: application.userId,
-                                role: 'MEMBER',
-                                status: 'PENDING_PAYMENT',
-                                assignedById: userId
-                            }
-                        });
-                    }
-
-                    // 3. Tạo transaction với status PENDING
+                    // 2. Tạo transaction với status PENDING (KHÔNG có referenceMembershipId vì chưa có membership)
                     const transaction = await tx.transaction.create({
                         data: {
                             clubId: clubId,
                             userId: application.userId,
                             type: 'MEMBERSHIP',
-                            referenceMembershipId: membership.id,
+                            referenceMembershipId: null, // Chưa có membership, sẽ tạo sau khi thanh toán thành công
                             amount: application.club.membershipFeeAmount,
                             currency: 'VND',
                             paymentMethod: 'PAYOS',
@@ -262,7 +228,6 @@ exports.reviewApplication = async (req, res) => {
 
                     return {
                         application: updatedApplication,
-                        membership: membership,
                         transaction: transaction
                     };
                 }, {
@@ -298,10 +263,12 @@ exports.reviewApplication = async (req, res) => {
                         console.error('Error generating QR code:', qrError);
                     }
 
-                    // Cập nhật transaction với PayOS data
+                    // Cập nhật transaction với PayOS data + time_out + qr_code
                     await prisma.transaction.update({
                         where: { id: result.transaction.id },
                         data: {
+                            time_out: paymentResult.expiredAt || null,
+                            qr_code: qrCodeDataUrl,
                             payosPayload: JSON.stringify({
                                 orderCode: orderCode,
                                 checkoutUrl: paymentResult.paymentLink,
@@ -349,7 +316,6 @@ exports.reviewApplication = async (req, res) => {
                     message: "Đơn xin tham gia đã được duyệt. Vui lòng thanh toán để hoàn tất việc tham gia club.",
                     data: {
                         application: result.application,
-                        membership: result.membership,
                         transaction: {
                             id: result.transaction.id,
                             orderCode: orderCode,
