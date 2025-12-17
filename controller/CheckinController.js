@@ -76,7 +76,8 @@ exports.checkinByQRCode = async (req, res) => {
         const eventStaff = await prisma.eventStaff.findFirst({
             where: {
                 eventId: ticket.event.id,
-                userId: staffUserId
+                userId: staffUserId,
+                isActive: true
             }
         });
         const isAdmin = req.user?.auth_role === 'ADMIN';
@@ -272,7 +273,8 @@ exports.checkinByEmail = async (req, res) => {
         const eventStaff = await prisma.eventStaff.findFirst({
             where: {
                 eventId: event.id,
-                userId: staffUserId
+                userId: staffUserId,
+                isActive: true
             }
         });
         const isAdmin = req.user?.auth_role === 'ADMIN';

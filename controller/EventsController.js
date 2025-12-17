@@ -287,8 +287,8 @@ exports.createEvent = async (req, res) => {
                 format: eventFormat,
                 onlineLink: eventFormat === 'ONLINE' ? (onlineLink ? onlineLink.trim() : null) : null,
                 visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
-                isActive: false, // Chờ duyệt quỹ
-                approvalStatus: 'PENDING',
+                isActive: false, // Chờ duyệt quỹ / chưa diễn ra
+                approvalStatus: 'PENDING', // Trạng thái event: PENDING -> APPROVED -> DONE / REJECTED
                 staff: staffIds && Array.isArray(staffIds) && staffIds.length > 0 ? {
                     create: staffIds.map(staffId => ({
                         userId: staffId
@@ -1536,17 +1536,34 @@ exports.getEventParticipants = async (req, res) => {
             });
         }
 
-        // 2. Kiểm tra quyền: chỉ club leader, staff hoặc admin mới xem được
-        const membership = await prisma.clubMembership.findFirst({
+        // 2. Kiểm tra quyền:
+        // - Club leader / staff / admin trong membership (còn ACTIVE)
+        // - HOẶC là event staff của sự kiện *và* đang là member ACTIVE của CLB
+        const activeMembership = await prisma.clubMembership.findFirst({
             where: {
                 clubId: event.clubId,
                 userId: userId,
-                status: 'ACTIVE',
-                role: { in: ['LEADER', 'STAFF', 'ADMIN'] }
+                status: 'ACTIVE'
             }
         });
 
-        if (!membership && req.user?.auth_role !== 'ADMIN') {
+        const isLeaderOrClubAdminOrStaff =
+            !!activeMembership &&
+            ['LEADER', 'STAFF', 'ADMIN'].includes(activeMembership.role);
+
+        // Event staff (không phụ thuộc membership còn hạn hay không)
+        const eventStaff = await prisma.eventStaff.findFirst({
+            where: {
+                eventId: event.id,
+                userId: userId,
+                isActive: true
+            }
+        });
+
+        // Staff hợp lệ phải vừa có membership ACTIVE, vừa nằm trong event_staff
+        const isEventStaffWithActiveMembership = !!eventStaff && !!activeMembership;
+
+        if (!isLeaderOrClubAdminOrStaff && !isEventStaffWithActiveMembership && req.user?.auth_role !== 'ADMIN') {
             return res.status(403).json({
                 success: false,
                 message: 'Chỉ club leader, staff hoặc admin mới có quyền xem danh sách người tham gia'

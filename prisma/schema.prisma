@@ -31,11 +31,11 @@ model User {
   ledClubs             Club[]              @relation("ClubLeader")
   eventRegistrations   EventRegistration[]
   eventStaff           EventStaff[]
+  approvedEvents       Event[]             @relation("EventApprovalUser")
   createdEvents        Event[]             @relation("EventCreator")
   feedbacks            Feedback[]
   approvedFundRequests FundRequest[]       @relation("FundRequestApprover")
   createdFundRequests  FundRequest[]       @relation("FundRequestCreator")
-  approvedEvents       Event[]             @relation("EventApprovalUser")
   tickets              Ticket[]
   transactions         Transaction[]
 
@@ -122,36 +122,36 @@ model ClubApplication {
 }
 
 model Event {
-  id            String              @id @default(uuid())
-  clubId        String              @map("club_id")
-  createdById   String?             @map("created_by")
-  approvalById  String?             @map("approval_by")
-  title         String
-  description   String?
-  type          EventType           @default(PUBLIC)
-  pricingType   PricingType?        @map("pricing_type")
-  price         Int                 @default(0)
-  capacity      Int?
-  visibleFrom   DateTime?           @map("visible_from")
-  startTime     DateTime?           @map("start_time")
-  endTime       DateTime?           @map("end_time")
-  location      String?
-  isActive      Boolean             @default(true) @map("is_active")
-  createdAt     DateTime            @default(now()) @map("created_at")
-  updatedAt     DateTime            @updatedAt @map("updated_at")
-  format        EventFormat         @default(OFFLINE)
-  onlineLink    String?             @map("online_link")
-  approvalAt    DateTime?           @map("approval_at")
+  id             String              @id @default(uuid())
+  clubId         String              @map("club_id")
+  createdById    String?             @map("created_by")
+  title          String
+  description    String?
+  type           EventType           @default(PUBLIC)
+  pricingType    PricingType?        @map("pricing_type")
+  price          Int                 @default(0)
+  capacity       Int?
+  visibleFrom    DateTime?           @map("visible_from")
+  startTime      DateTime?           @map("start_time")
+  endTime        DateTime?           @map("end_time")
+  location       String?
+  isActive       Boolean             @default(true) @map("is_active")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+  format         EventFormat         @default(OFFLINE)
+  onlineLink     String?             @map("online_link")
+  approvalAt     DateTime?           @map("approval_at")
+  approvalById   String?             @map("approval_by")
   approvalStatus EventApprovalStatus @default(PENDING) @map("approval_status")
-  checkins      Checkin[]
-  registrations EventRegistration[]
-  staff         EventStaff[]
-  club          Club                @relation(fields: [clubId], references: [id], onDelete: Cascade)
-  createdBy     User?               @relation("EventCreator", fields: [createdById], references: [id])
-  approvalBy    User?               @relation("EventApprovalUser", fields: [approvalById], references: [id])
-  feedbacks     Feedback[]
-  fundRequests  FundRequest[]
-  tickets       Ticket[]
+  checkins       Checkin[]
+  registrations  EventRegistration[]
+  staff          EventStaff[]
+  approvalBy     User?               @relation("EventApprovalUser", fields: [approvalById], references: [id])
+  club           Club                @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  createdBy      User?               @relation("EventCreator", fields: [createdById], references: [id])
+  feedbacks      Feedback[]
+  fundRequests   FundRequest[]
+  tickets        Ticket[]
 
   @@map("events")
 }
@@ -304,6 +304,7 @@ model EventStaff {
   eventId   String   @map("event_id")
   userId    String   @map("user_id")
   createdAt DateTime @default(now()) @map("created_at")
+  isActive  Boolean  @default(true) @map("is_active")
   event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -322,16 +323,6 @@ model Feedback {
   user      User?    @relation(fields: [userId], references: [id])
 
   @@map("feedbacks")
-}
-
-model fund_request_items {
-  id              String      @id
-  fund_request_id String
-  name            String
-  description     String?
-  amount          Int
-  created_at      DateTime    @default(now())
-  fund_requests   FundRequest @relation(fields: [fund_request_id], references: [id], onDelete: Cascade)
 }
 
 enum SystemRole {
@@ -385,9 +376,9 @@ enum TicketStatus {
 enum TransactionType {
   MEMBERSHIP
   EVENT_TICKET
-  FUND_REQ
   TOPUP
   REFUND
+  FUND_REQ
 }
 
 enum TransactionStatus {
@@ -420,4 +411,5 @@ enum EventApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+  DONE
 }
