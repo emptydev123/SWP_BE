@@ -2174,12 +2174,18 @@ exports.createFundRequestPayment = async (req, res) => {
             throw new Error(`Không thể tạo payment link từ PayOS: ${payosError.message}`);
         }
 
-        // 9. Generate QR code từ payment link
+        // 9. Lấy QR code: ưu tiên QR code từ PayOS (thanh toán trực tiếp), nếu không có thì generate từ payment link
         let qrCodeDataUrl = null;
-        try {
-            qrCodeDataUrl = await QRCode.toDataURL(paymentResult.paymentLink);
-        } catch (qrError) {
-            console.error('Error generating QR code:', qrError);
+        if (paymentResult.qrCode) {
+            // PayOS trả về QR code thanh toán trực tiếp (VietQR)
+            qrCodeDataUrl = paymentResult.qrCode;
+        } else {
+            // Fallback: generate QR code từ payment link (navigate tới trang PayOS)
+            try {
+                qrCodeDataUrl = await QRCode.toDataURL(paymentResult.paymentLink);
+            } catch (qrError) {
+                console.error('Error generating QR code:', qrError);
+            }
         }
 
         // 10. Cập nhật transaction với PayOS data
@@ -2191,6 +2197,7 @@ exports.createFundRequestPayment = async (req, res) => {
                 payosPayload: JSON.stringify({
                     orderCode: orderCode,
                     checkoutUrl: paymentResult.paymentLink,
+                    qrCode: paymentResult.qrCode || null,
                     fundRequestId: fundRequest.id,
                     eventId: eventId,
                     ...paymentResult.data
