@@ -1979,3 +1979,96 @@ exports.checkAndSyncPaymentStatus = async (req, res) => {
         });
     }
 };
+
+/**
+ * Cancel a pending payment
+ * - User can only cancel their own PENDING transactions
+ * - Cancels payment on PayOS if possible
+ * - Updates transaction status to CANCELLED
+ * - Cancels reserved tickets if EVENT_TICKET
+ */
+exports.cancelPendingPayment = async (req, res) => {
+    try {
+        const { transactionId } = req.params;
+        const userId = req.userId;
+
+        // 1. Find transaction
+        const transaction = await prisma.transaction.findUnique({
+            where: { id: transactionId },
+            include: {
+                user: { select: { id: true, email: true } }
+            }
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy giao dịch'
+            });
+        }
+
+        // 2. Verify ownership
+        if (transaction.userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: 'Không có quyền hủy giao dịch này'
+            });
+        }
+
+        // 3. Check if can be cancelled (only PENDING)
+        if (transaction.status !== 'PENDING') {
+            return res.status(400).json({
+                success: false,
+                message: `Không thể hủy giao dịch đã ${transaction.status === 'SUCCESS' ? 'thành công' : transaction.status === 'CANCELLED' ? 'bị hủy' : 'thất bại'}`
+            });
+        }
+
+        // 4. Try to cancel on PayOS
+        const orderCode = parseInt(transaction.paymentReference);
+        if (orderCode && !isNaN(orderCode)) {
+            try {
+                await payosService.cancelPaymentLink(orderCode, 'User cancelled');
+                console.log(`[Cancel] Cancelled payment on PayOS: ${orderCode}`);
+            } catch (payosError) {
+                console.log('[Cancel] Could not cancel on PayOS (may be already expired):', payosError.message);
+                // Continue to cancel in our DB anyway
+            }
+        }
+
+        // 5. Update transaction status
+        await prisma.transaction.update({
+            where: { id: transactionId },
+            data: {
+                status: 'CANCELLED'
+            }
+        });
+
+        // 6. Cancel reserved tickets if EVENT_TICKET
+        if (transaction.type === 'EVENT_TICKET') {
+            await prisma.ticket.updateMany({
+                where: {
+                    transactionId: transactionId,
+                    status: 'RESERVED'
+                },
+                data: {
+                    status: 'CANCELLED'
+                }
+            });
+            console.log(`[Cancel] Cancelled reserved tickets for transaction ${transactionId}`);
+        }
+
+        console.log(`[Cancel] Successfully cancelled transaction ${transactionId}`);
+
+        res.status(200).json({
+            success: true,
+            message: 'Đã hủy giao dịch thành công'
+        });
+
+    } catch (error) {
+        console.error('Cancel Payment Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi hủy thanh toán'
+        });
+    }
+};

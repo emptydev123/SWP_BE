@@ -287,4 +287,35 @@ router.post(
     transactionController.checkAndSyncPaymentStatus
 );
 
+/**
+ * @swagger
+ * /api/transactions/{transactionId}/cancel:
+ *   post:
+ *     summary: Cancel a pending payment
+ *     description: Hủy thanh toán đang chờ. Chỉ user sở hữu transaction mới có quyền hủy.
+ *     tags: [Transactions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: transactionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Payment cancelled successfully
+ *       400:
+ *         description: Transaction is not pending
+ *       403:
+ *         description: No permission
+ *       404:
+ *         description: Transaction not found
+ */
+router.post(
+    '/:transactionId/cancel',
+    auth.authMiddleWare,
+    transactionController.cancelPendingPayment
+);
+
 module.exports = router;

@@ -325,6 +325,22 @@ model Feedback {
   @@map("feedbacks")
 }
 
+model audit_logs {
+  id         String   @id
+  action     String
+  user_id    String?
+  user_email String?
+  details    String?
+  ip_address String?
+  user_agent String?
+  metadata   Json?
+  created_at DateTime @default(now())
+
+  @@index([action])
+  @@index([created_at])
+  @@index([user_id])
+}
+
 enum SystemRole {
   ADMIN
   USER
