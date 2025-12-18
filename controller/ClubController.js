@@ -1158,3 +1158,143 @@ exports.updateMemberRole = async (req, res) => {
         });
     }
 };
+
+/**
+ * Get admin dashboard statistics
+ */
+exports.getAdminStats = async (req, res) => {
+    try {
+        const userId = req.userId;
+
+        // Check if user is admin
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { auth_role: true }
+        });
+
+        if (!user || user.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ admin mới có quyền xem thống kê hệ thống'
+            });
+        }
+
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        // Get total clubs
+        const totalClubs = await prisma.club.count({
+            where: { isActive: true }
+        });
+
+        // Get new events this month (created this month)
+        const newEventsThisMonth = await prisma.event.count({
+            where: {
+                createdAt: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                }
+            }
+        });
+
+        // Get active members (memberships with ACTIVE status)
+        const activeMembers = await prisma.clubMembership.count({
+            where: { status: 'ACTIVE' }
+        });
+
+        // Get new users this month
+        const newUsersThisMonth = await prisma.user.count({
+            where: {
+                createdAt: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                }
+            }
+        });
+
+        // Get events this month (events that start this month)
+        const eventsThisMonth = await prisma.event.count({
+            where: {
+                startTime: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                },
+                approvalStatus: 'APPROVED'
+            }
+        });
+
+        // Get upcoming events (events that start in the future)
+        const upcomingEvents = await prisma.event.count({
+            where: {
+                startTime: {
+                    gte: now
+                },
+                approvalStatus: 'APPROVED',
+                isActive: true
+            }
+        });
+
+        // Get growth data for last 6 months
+        const growthData = [];
+        for (let i = 5; i >= 0; i--) {
+            const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
+            
+            const [clubsCount, usersCount, eventsCount] = await Promise.all([
+                prisma.club.count({
+                    where: {
+                        isActive: true,
+                        createdAt: {
+                            lte: monthEnd
+                        }
+                    }
+                }),
+                prisma.user.count({
+                    where: {
+                        createdAt: {
+                            lte: monthEnd
+                        }
+                    }
+                }),
+                prisma.event.count({
+                    where: {
+                        createdAt: {
+                            lte: monthEnd
+                        },
+                        approvalStatus: 'APPROVED'
+                    }
+                })
+            ]);
+
+            const monthNames = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12'];
+            growthData.push({
+                name: `${monthNames[monthStart.getMonth()]}/${monthStart.getFullYear().toString().slice(-2)}`,
+                clubs: clubsCount,
+                users: usersCount,
+                events: eventsCount
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy thống kê thành công',
+            data: {
+                totalClubs,
+                newEventsThisMonth,
+                activeMembers,
+                newUsersThisMonth,
+                eventsThisMonth,
+                upcomingEvents,
+                growthData
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Admin Stats Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy thống kê'
+        });
+    }
+};

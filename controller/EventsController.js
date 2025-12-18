@@ -2429,3 +2429,836 @@ exports.getEventFeedbacks = async (req, res) => {
     }
 };
 
+/**
+ * Lấy thống kê thu chi tháng hiện tại (Treasurer hoặc Admin)
+ */
+exports.getMonthlyStats = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const userId = req.userId;
+
+        if (!clubId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp clubId'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền xem thống kê thu chi'
+            });
+        }
+
+        // Tính toán thời gian đầu và cuối tháng hiện tại
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        // Tính tổng thu nhập trong tháng
+        const monthlyIncomeAgg = await prisma.clubLedger.aggregate({
+            where: {
+                clubId: clubId,
+                type: 'INCOME',
+                createdAt: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                }
+            },
+            _sum: { amount: true }
+        });
+
+        // Tính tổng chi tiêu trong tháng
+        const monthlyExpenseAgg = await prisma.clubLedger.aggregate({
+            where: {
+                clubId: clubId,
+                type: 'EXPENSE',
+                createdAt: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                }
+            },
+            _sum: { amount: true }
+        });
+
+        // Tính số dư tổng (tất cả thời gian)
+        const totalIncomeAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: clubId, type: 'INCOME' },
+            _sum: { amount: true }
+        });
+        const totalExpenseAgg = await prisma.clubLedger.aggregate({
+            where: { clubId: clubId, type: 'EXPENSE' },
+            _sum: { amount: true }
+        });
+        const balance = (totalIncomeAgg._sum.amount || 0) - (totalExpenseAgg._sum.amount || 0);
+
+        const monthlyIncome = monthlyIncomeAgg._sum.amount || 0;
+        const monthlyExpense = monthlyExpenseAgg._sum.amount || 0;
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy thống kê thu chi tháng thành công',
+            data: {
+                monthlyIncome,
+                monthlyExpense,
+                balance
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Monthly Stats Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy thống kê thu chi'
+        });
+    }
+};
+
+/**
+ * Lấy dữ liệu biểu đồ thu chi và phân bổ thu nhập (Treasurer hoặc Admin)
+ */
+exports.getChartData = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const userId = req.userId;
+
+        if (!clubId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp clubId'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền xem dữ liệu biểu đồ'
+            });
+        }
+
+        // Lấy dữ liệu ledger trong 6 tháng gần nhất
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+        sixMonthsAgo.setDate(1);
+        sixMonthsAgo.setHours(0, 0, 0, 0);
+
+        const ledgerEntries = await prisma.clubLedger.findMany({
+            where: {
+                clubId: clubId,
+                createdAt: {
+                    gte: sixMonthsAgo
+                }
+            },
+            include: {
+                transaction: {
+                    select: {
+                        type: true
+                    }
+                }
+            },
+            orderBy: {
+                createdAt: 'asc'
+            }
+        });
+
+        // 1. Dữ liệu biểu đồ thu chi theo thời gian (group by month)
+        const incomeExpenseByMonth = {};
+        
+        ledgerEntries.forEach(entry => {
+            const date = new Date(entry.createdAt);
+            const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            
+            if (!incomeExpenseByMonth[monthKey]) {
+                incomeExpenseByMonth[monthKey] = {
+                    month: monthKey,
+                    income: 0,
+                    expense: 0
+                };
+            }
+            
+            if (entry.type === 'INCOME') {
+                incomeExpenseByMonth[monthKey].income += entry.amount;
+            } else if (entry.type === 'EXPENSE') {
+                incomeExpenseByMonth[monthKey].expense += entry.amount;
+            }
+        });
+
+        // Convert to array and format month labels
+        const incomeExpenseData = Object.values(incomeExpenseByMonth).map(item => {
+            const [year, month] = item.month.split('-');
+            const monthNames = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12'];
+            return {
+                month: `${monthNames[parseInt(month) - 1]}/${year.slice(-2)}`,
+                income: item.income,
+                expense: item.expense
+            };
+        });
+
+        // 2. Phân bổ thu nhập theo nguồn (MEMBERSHIP vs EVENT_TICKET)
+        const incomeBySource = {
+            membership: 0,
+            eventTickets: 0,
+            other: 0
+        };
+
+        ledgerEntries.forEach(entry => {
+            if (entry.type === 'INCOME' && entry.transaction) {
+                if (entry.transaction.type === 'MEMBERSHIP') {
+                    incomeBySource.membership += entry.amount;
+                } else if (entry.transaction.type === 'EVENT_TICKET') {
+                    incomeBySource.eventTickets += entry.amount;
+                } else {
+                    incomeBySource.other += entry.amount;
+                }
+            } else if (entry.type === 'INCOME' && !entry.transaction) {
+                // Income without transaction (manual entries if any)
+                incomeBySource.other += entry.amount;
+            }
+        });
+
+        // Format income distribution data
+        const incomeDistribution = [
+            {
+                name: 'Phí thành viên',
+                value: incomeBySource.membership,
+                color: '#3b82f6' // blue
+            },
+            {
+                name: 'Vé sự kiện',
+                value: incomeBySource.eventTickets,
+                color: '#10b981' // green
+            },
+            {
+                name: 'Khác',
+                value: incomeBySource.other,
+                color: '#6b7280' // gray
+            }
+        ].filter(item => item.value > 0); // Only include sources with income
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy dữ liệu biểu đồ thành công',
+            data: {
+                incomeExpenseOverTime: incomeExpenseData,
+                incomeDistribution: incomeDistribution
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Chart Data Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy dữ liệu biểu đồ'
+        });
+    }
+};
+
+/**
+ * Lấy danh sách ledger entries của club (Treasurer hoặc Admin)
+ */
+exports.getClubLedgerEntries = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const userId = req.userId;
+        const { type, startDate, endDate, page = 1, limit = 50 } = req.query;
+
+        if (!clubId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp clubId'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền xem sổ cái'
+            });
+        }
+
+        // Build where clause
+        const where = {
+            clubId: clubId
+        };
+
+        if (type && (type === 'INCOME' || type === 'EXPENSE')) {
+            where.type = type;
+        }
+
+        if (startDate || endDate) {
+            where.createdAt = {};
+            if (startDate) {
+                where.createdAt.gte = new Date(startDate);
+            }
+            if (endDate) {
+                const endDateTime = new Date(endDate);
+                endDateTime.setHours(23, 59, 59, 999);
+                where.createdAt.lte = endDateTime;
+            }
+        }
+
+        // Pagination
+        const pageNum = parseInt(page) || 1;
+        const limitNum = Math.min(parseInt(limit) || 50, 100); // Max 100 per page
+        const skip = (pageNum - 1) * limitNum;
+
+        // Get ledger entries with related data
+        const [entries, total] = await Promise.all([
+            prisma.clubLedger.findMany({
+                where,
+                include: {
+                    transaction: {
+                        select: {
+                            id: true,
+                            type: true,
+                            amount: true,
+                            status: true
+                        }
+                    },
+                    fundRequest: {
+                        select: {
+                            id: true,
+                            title: true,
+                            amount: true
+                        }
+                    }
+                },
+                orderBy: {
+                    createdAt: 'desc'
+                },
+                skip,
+                take: limitNum
+            }),
+            prisma.clubLedger.count({ where })
+        ]);
+
+        // Format response
+        const formattedEntries = entries.map(entry => ({
+            id: entry.id,
+            clubId: entry.clubId,
+            type: entry.type,
+            transactionId: entry.transactionId,
+            fundRequestId: entry.fundRequestId,
+            amount: entry.amount,
+            balanceAfter: entry.balanceAfter,
+            note: entry.note,
+            createdAt: entry.createdAt.toISOString(),
+            transaction: entry.transaction ? {
+                id: entry.transaction.id,
+                type: entry.transaction.type,
+                amount: entry.transaction.amount,
+                status: entry.transaction.status
+            } : null,
+            fundRequest: entry.fundRequest ? {
+                id: entry.fundRequest.id,
+                title: entry.fundRequest.title,
+                totalAmount: entry.fundRequest.amount
+            } : null
+        }));
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy danh sách sổ cái thành công',
+            data: formattedEntries,
+            pagination: {
+                page: pageNum,
+                limit: limitNum,
+                total,
+                totalPages: Math.ceil(total / limitNum),
+                hasNext: pageNum * limitNum < total,
+                hasPrev: pageNum > 1
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Club Ledger Entries Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy danh sách sổ cái'
+        });
+    }
+};
+
+/**
+ * Lấy danh sách transactions của club (Treasurer hoặc Admin)
+ */
+exports.getClubTransactions = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const userId = req.userId;
+        const { type, status, startDate, endDate, page = 1, limit = 50 } = req.query;
+
+        if (!clubId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp clubId'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền xem giao dịch của club'
+            });
+        }
+
+        // Build where clause
+        const where = {
+            clubId: clubId
+        };
+
+        if (type) {
+            where.type = type;
+        }
+
+        if (status) {
+            where.status = status;
+        }
+
+        if (startDate || endDate) {
+            where.createdAt = {};
+            if (startDate) {
+                where.createdAt.gte = new Date(startDate);
+            }
+            if (endDate) {
+                const endDateTime = new Date(endDate);
+                endDateTime.setHours(23, 59, 59, 999);
+                where.createdAt.lte = endDateTime;
+            }
+        }
+
+        // Pagination
+        const pageNum = parseInt(page) || 1;
+        const limitNum = Math.min(parseInt(limit) || 50, 100); // Max 100 per page
+        const skip = (pageNum - 1) * limitNum;
+
+        // Get transactions with related data
+        const [transactions, total] = await Promise.all([
+            prisma.transaction.findMany({
+                where,
+                include: {
+                    club: {
+                        select: {
+                            id: true,
+                            name: true,
+                            logoUrl: true
+                        }
+                    },
+                    referenceTicket: {
+                        select: {
+                            id: true,
+                            event: {
+                                select: {
+                                    id: true,
+                                    title: true
+                                }
+                            }
+                        }
+                    },
+                    referenceMembership: {
+                        select: {
+                            id: true,
+                            club: {
+                                select: {
+                                    id: true,
+                                    name: true
+                                }
+                            }
+                        }
+                    }
+                },
+                orderBy: {
+                    createdAt: 'desc'
+                },
+                skip,
+                take: limitNum
+            }),
+            prisma.transaction.count({ where })
+        ]);
+
+        // Format response
+        const formattedTransactions = transactions.map(tx => ({
+            id: tx.id,
+            clubId: tx.clubId,
+            userId: tx.userId,
+            type: tx.type,
+            amount: tx.amount,
+            currency: tx.currency,
+            paymentMethod: tx.paymentMethod,
+            paymentReference: tx.paymentReference,
+            status: tx.status,
+            createdAt: tx.createdAt.toISOString(),
+            confirmedAt: tx.confirmedAt ? tx.confirmedAt.toISOString() : null,
+            club: tx.club ? {
+                id: tx.club.id,
+                name: tx.club.name,
+                logoUrl: tx.club.logoUrl
+            } : null,
+            referenceTicket: tx.referenceTicket ? {
+                id: tx.referenceTicket.id,
+                event: tx.referenceTicket.event
+            } : null,
+            referenceMembership: tx.referenceMembership ? {
+                id: tx.referenceMembership.id,
+                club: tx.referenceMembership.club
+            } : null
+        }));
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy danh sách giao dịch thành công',
+            data: formattedTransactions,
+            pagination: {
+                page: pageNum,
+                limit: limitNum,
+                total,
+                totalPages: Math.ceil(total / limitNum),
+                hasNext: pageNum * limitNum < total,
+                hasPrev: pageNum > 1
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Club Transactions Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy danh sách giao dịch'
+        });
+    }
+};
+
+/**
+ * Export financial report for a club (Treasurer or Admin)
+ */
+exports.exportReport = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const userId = req.userId;
+        const { reportType, startDate, endDate, format = 'excel' } = req.body;
+
+        if (!clubId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp clubId'
+            });
+        }
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp khoảng thời gian (startDate và endDate)'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền xuất báo cáo'
+            });
+        }
+
+        // Lấy thông tin club
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: { id: true, name: true, slug: true }
+        });
+
+        if (!club) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy câu lạc bộ'
+            });
+        }
+
+        // Parse dates
+        const startDateTime = new Date(startDate);
+        startDateTime.setHours(0, 0, 0, 0);
+        const endDateTime = new Date(endDate);
+        endDateTime.setHours(23, 59, 59, 999);
+
+        // Lấy dữ liệu ledger entries trong khoảng thời gian
+        const ledgerEntries = await prisma.clubLedger.findMany({
+            where: {
+                clubId: clubId,
+                createdAt: {
+                    gte: startDateTime,
+                    lte: endDateTime
+                }
+            },
+            include: {
+                transaction: {
+                    select: {
+                        id: true,
+                        type: true,
+                        amount: true,
+                        status: true,
+                        createdAt: true
+                    }
+                },
+                fundRequest: {
+                    select: {
+                        id: true,
+                        title: true,
+                        amount: true
+                    }
+                }
+            },
+            orderBy: {
+                createdAt: 'desc'
+            }
+        });
+
+        // Lấy dữ liệu transactions trong khoảng thời gian
+        const transactions = await prisma.transaction.findMany({
+            where: {
+                clubId: clubId,
+                createdAt: {
+                    gte: startDateTime,
+                    lte: endDateTime
+                }
+            },
+            include: {
+                referenceTicket: {
+                    select: {
+                        event: {
+                            select: {
+                                title: true
+                            }
+                        }
+                    }
+                },
+                referenceMembership: {
+                    select: {
+                        club: {
+                            select: {
+                                name: true
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: {
+                createdAt: 'desc'
+            }
+        });
+
+        // Tính tổng hợp
+        const totalIncome = ledgerEntries
+            .filter(e => e.type === 'INCOME')
+            .reduce((sum, e) => sum + e.amount, 0);
+        const totalExpense = ledgerEntries
+            .filter(e => e.type === 'EXPENSE')
+            .reduce((sum, e) => sum + e.amount, 0);
+        const netBalance = totalIncome - totalExpense;
+
+        // Tạo dữ liệu báo cáo dựa trên reportType
+        let reportData = [];
+        let reportTitle = '';
+
+        switch (reportType) {
+            case 'income-statement':
+                reportTitle = 'Báo cáo thu nhập';
+                reportData = ledgerEntries
+                    .filter(e => e.type === 'INCOME')
+                    .map(e => ({
+                        'Ngày giờ': new Date(e.createdAt).toLocaleString('vi-VN'),
+                        'Loại': 'Thu nhập',
+                        'Ghi chú': e.note || '',
+                        'Số tiền': e.amount,
+                        'Số dư sau': e.balanceAfter,
+                        'Giao dịch': e.transaction ? `TX-${e.transaction.id.slice(0, 8)}` : '',
+                        'Yêu cầu quỹ': e.fundRequest ? e.fundRequest.title : ''
+                    }));
+                break;
+
+            case 'expense-report':
+                reportTitle = 'Báo cáo chi tiêu';
+                reportData = ledgerEntries
+                    .filter(e => e.type === 'EXPENSE')
+                    .map(e => ({
+                        'Ngày giờ': new Date(e.createdAt).toLocaleString('vi-VN'),
+                        'Loại': 'Chi tiêu',
+                        'Ghi chú': e.note || '',
+                        'Số tiền': e.amount,
+                        'Số dư sau': e.balanceAfter,
+                        'Giao dịch': e.transaction ? `TX-${e.transaction.id.slice(0, 8)}` : '',
+                        'Yêu cầu quỹ': e.fundRequest ? e.fundRequest.title : ''
+                    }));
+                break;
+
+            case 'balance-sheet':
+                reportTitle = 'Bảng cân đối';
+                reportData = [
+                    {
+                        'Chỉ tiêu': 'Tổng thu nhập',
+                        'Giá trị': totalIncome
+                    },
+                    {
+                        'Chỉ tiêu': 'Tổng chi tiêu',
+                        'Giá trị': totalExpense
+                    },
+                    {
+                        'Chỉ tiêu': 'Số dư ròng',
+                        'Giá trị': netBalance
+                    }
+                ];
+                break;
+
+            case 'transaction-summary':
+            default:
+                reportTitle = 'Tóm tắt giao dịch';
+                reportData = transactions.map(tx => ({
+                    'Mã giao dịch': tx.id.slice(0, 8),
+                    'Loại': tx.type,
+                    'Số tiền': tx.amount,
+                    'Trạng thái': tx.status,
+                    'Ngày tạo': new Date(tx.createdAt).toLocaleString('vi-VN'),
+                    'Ngày xác nhận': tx.confirmedAt ? new Date(tx.confirmedAt).toLocaleString('vi-VN') : '',
+                    'Sự kiện': tx.referenceTicket?.event?.title || '',
+                    'CLB': tx.referenceMembership?.club?.name || club.name
+                }));
+                break;
+        }
+
+        // Xuất file theo format
+        if (format === 'excel' || format === 'xlsx') {
+            const XLSX = require('xlsx');
+            
+            // Tạo workbook
+            const workbook = XLSX.utils.book_new();
+            
+            // Tạo worksheet từ dữ liệu
+            const worksheet = XLSX.utils.json_to_sheet(reportData);
+            
+            // Thêm worksheet vào workbook
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Báo cáo');
+            
+            // Tạo buffer
+            const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+            
+            // Set headers
+            const fileName = `${reportTitle}_${club.name}_${startDate}_${endDate}.xlsx`.replace(/[^a-zA-Z0-9._-]/g, '_');
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+            
+            return res.send(buffer);
+
+        } else if (format === 'csv') {
+            // Convert to CSV
+            if (reportData.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Không có dữ liệu để xuất'
+                });
+            }
+
+            const headers = Object.keys(reportData[0]);
+            const csvRows = [
+                headers.join(','),
+                ...reportData.map(row => 
+                    headers.map(header => {
+                        const value = row[header];
+                        // Escape commas and quotes in CSV
+                        if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
+                            return `"${value.replace(/"/g, '""')}"`;
+                        }
+                        return value;
+                    }).join(',')
+                )
+            ];
+
+            const csvContent = csvRows.join('\n');
+            const fileName = `${reportTitle}_${club.name}_${startDate}_${endDate}.csv`.replace(/[^a-zA-Z0-9._-]/g, '_');
+            
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+            
+            return res.send('\ufeff' + csvContent); // BOM for Excel UTF-8 support
+
+        } else if (format === 'pdf') {
+            // For PDF, we'll return a simple text-based response or use a library
+            // For now, let's use a simple approach with JSON data that frontend can convert
+            // Or we can install pdfkit later
+            return res.status(400).json({
+                success: false,
+                message: 'PDF export chưa được hỗ trợ. Vui lòng sử dụng Excel hoặc CSV.',
+                data: {
+                    reportTitle,
+                    clubName: club.name,
+                    startDate,
+                    endDate,
+                    summary: {
+                        totalIncome,
+                        totalExpense,
+                        netBalance
+                    },
+                    entries: reportData
+                }
+            });
+        } else {
+            return res.status(400).json({
+                success: false,
+                message: 'Định dạng không được hỗ trợ. Chỉ hỗ trợ: excel, csv'
+            });
+        }
+
+    } catch (error) {
+        console.error('Export Report Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi xuất báo cáo'
+        });
+    }
+};
+

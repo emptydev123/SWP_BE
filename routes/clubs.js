@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const clubController = require('../controller/ClubController');
+const eventsController = require('../controller/EventsController');
 const auth = require('../middlewares/auth');
 const upload = require('../middlewares/upload');
 
@@ -609,6 +610,299 @@ router.patch('/:clubId/memberships/:membershipId/role',
     auth.requireRole('USER', 'ADMIN'),
     auth.requireClubLeader,
     clubController.updateMemberRole
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/monthly-stats:
+ *   get:
+ *     summary: Get monthly income and expense statistics (Treasurer/Admin only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     responses:
+ *       200:
+ *         description: Monthly statistics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     monthlyIncome:
+ *                       type: number
+ *                       description: Total income for current month
+ *                     monthlyExpense:
+ *                       type: number
+ *                       description: Total expense for current month
+ *                     balance:
+ *                       type: number
+ *                       description: Total club balance (all time)
+ *       403:
+ *         description: No permission (Treasurer or Admin only)
+ *       404:
+ *         description: Club not found
+ */
+router.get('/:clubId/monthly-stats',
+    auth.authMiddleWare,
+    eventsController.getMonthlyStats
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/chart-data:
+ *   get:
+ *     summary: Get chart data for income/expense over time and income distribution (Treasurer/Admin only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     responses:
+ *       200:
+ *         description: Chart data retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     incomeExpenseOverTime:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           month:
+ *                             type: string
+ *                           income:
+ *                             type: number
+ *                           expense:
+ *                             type: number
+ *                     incomeDistribution:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           name:
+ *                             type: string
+ *                           value:
+ *                             type: number
+ *                           color:
+ *                             type: string
+ *       403:
+ *         description: No permission (Treasurer or Admin only)
+ *       404:
+ *         description: Club not found
+ */
+router.get('/:clubId/chart-data',
+    auth.authMiddleWare,
+    eventsController.getChartData
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/ledger:
+ *   get:
+ *     summary: Get ledger entries for a club (Treasurer/Admin only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *           enum: [INCOME, EXPENSE]
+ *         description: Filter by transaction type
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Filter from date (YYYY-MM-DD)
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Filter to date (YYYY-MM-DD)
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 50
+ *         description: Items per page
+ *     responses:
+ *       200:
+ *         description: Ledger entries retrieved successfully
+ *       403:
+ *         description: No permission (Treasurer or Admin only)
+ */
+router.get('/:clubId/ledger',
+    auth.authMiddleWare,
+    eventsController.getClubLedgerEntries
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/transactions:
+ *   get:
+ *     summary: Get PayOS transactions for a club (Treasurer/Admin only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *           enum: [MEMBERSHIP, EVENT_TICKET, TOPUP, REFUND, FUND_REQ]
+ *         description: Filter by transaction type
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [PENDING, SUCCESS, FAILED, CANCELLED, REFUNDED]
+ *         description: Filter by transaction status
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Filter from date (YYYY-MM-DD)
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Filter to date (YYYY-MM-DD)
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 50
+ *         description: Items per page
+ *     responses:
+ *       200:
+ *         description: Transactions retrieved successfully
+ *       403:
+ *         description: No permission (Treasurer or Admin only)
+ */
+router.get('/:clubId/transactions',
+    auth.authMiddleWare,
+    eventsController.getClubTransactions
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/reports/export:
+ *   post:
+ *     summary: Export financial report for a club (Treasurer/Admin only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reportType
+ *               - startDate
+ *               - endDate
+ *             properties:
+ *               reportType:
+ *                 type: string
+ *                 enum: [income-statement, expense-report, balance-sheet, transaction-summary]
+ *                 description: Type of report
+ *               startDate:
+ *                 type: string
+ *                 format: date
+ *                 description: Start date (YYYY-MM-DD)
+ *               endDate:
+ *                 type: string
+ *                 format: date
+ *                 description: End date (YYYY-MM-DD)
+ *               format:
+ *                 type: string
+ *                 enum: [excel, csv, pdf]
+ *                 default: excel
+ *                 description: Export format
+ *     responses:
+ *       200:
+ *         description: Report file
+ *         content:
+ *           application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *           text/csv:
+ *             schema:
+ *               type: string
+ *       403:
+ *         description: No permission (Treasurer or Admin only)
+ */
+router.post('/:clubId/reports/export',
+    auth.authMiddleWare,
+    eventsController.exportReport
 );
 
 module.exports = router;
