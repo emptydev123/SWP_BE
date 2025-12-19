@@ -85,4 +85,31 @@ const requireClubLeader = async (req, res, next) => {
     }
 };
 
-module.exports = { authMiddleWare, requireRole, requireClubLeader };
+// Alias for consistency with some routes
+const authenticateToken = authMiddleWare;
+
+// Middleware to require system admin role
+const requireSystemAdmin = async (req, res, next) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+        
+        if (req.user.auth_role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Forbidden - System Admin only' });
+        }
+        
+        next();
+    } catch (error) {
+        console.error('Require System Admin Error:', error);
+        res.status(500).json({ message: error.message || 'Lỗi khi kiểm tra quyền admin' });
+    }
+};
+
+module.exports = { 
+    authMiddleWare, 
+    authenticateToken,
+    requireRole, 
+    requireClubLeader,
+    requireSystemAdmin
+};

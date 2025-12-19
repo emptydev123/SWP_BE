@@ -244,6 +244,13 @@ router.post('/',
     clubController.createClub
 );
 
+// Admin: update basic club info
+router.patch('/:clubId',
+    auth.authMiddleWare,
+    auth.requireRole('ADMIN'),
+    clubController.updateClubBasicInfo
+);
+
 // Club Applications Routes
 const applicationController = require('../controller/ClubApplicationController');
 

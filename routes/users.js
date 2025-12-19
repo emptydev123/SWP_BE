@@ -209,4 +209,57 @@ router.get('/getallprofile', auth.authMiddleWare,
     auth.requireRole('ADMIN'),
     user.getAllProfileUsers
 );
+
+/**
+ * @swagger
+ * /api/admin/users/{userId}:
+ *   patch:
+ *     summary: Cập nhật thông tin user (Admin only)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của user cần cập nhật
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               fullName:
+ *                 type: string
+ *                 example: Nguyễn Văn A
+ *               email:
+ *                 type: string
+ *                 example: nguyenvana@fpt.edu.vn
+ *               phone:
+ *                 type: string
+ *                 example: 0901234567
+ *               studentCode:
+ *                 type: string
+ *                 example: SE171234
+ *     responses:
+ *       200:
+ *         description: Cập nhật thành công
+ *       400:
+ *         description: Lỗi validate hoặc dữ liệu trùng
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden (Not Admin)
+ *       404:
+ *         description: User không tồn tại
+ */
+router.patch('/admin/users/:userId',
+    auth.authMiddleWare,
+    auth.requireRole('ADMIN'),
+    user.updateUserByAdmin
+);
+
 module.exports = router;
