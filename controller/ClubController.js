@@ -291,6 +291,18 @@ exports.createClub = async (req, res) => {
                     }
                 });
 
+                // 2.1. Tạo ledger entry với quỹ ban đầu 500000 VND
+                const initialFundAmount = 500000;
+                await tx.clubLedger.create({
+                    data: {
+                        clubId: newClub.id,
+                        type: 'INCOME',
+                        amount: initialFundAmount,
+                        balanceAfter: initialFundAmount,
+                        note: 'Initial fund for new club'
+                    }
+                });
+
                 // 3. Xử lý tất cả members từ Excel
                 const membershipResults = [];
                 const emailResults = [];
@@ -1240,7 +1252,7 @@ exports.getAdminStats = async (req, res) => {
         for (let i = 5; i >= 0; i--) {
             const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
             const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
-            
+
             const [clubsCount, usersCount, eventsCount] = await Promise.all([
                 prisma.club.count({
                     where: {

@@ -7,14 +7,14 @@ const auth = require('../middlewares/auth');
  * @swagger
  * tags:
  *   name: Users
- *   description:  
+ *   description: User Management
  */
 
 /**
  * @swagger
  * /api/users/register:
  *   post:
- *     summary: Đăng ký tài khoản mới (SCMS)
+ *     summary: Register new account (SCMS)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -35,7 +35,7 @@ const auth = require('../middlewares/auth');
  *                 example: 123456
  *               fullName:
  *                 type: string
- *                 example: Huỳnh Trấn Tâm
+ *                 example: John Doe
  *               studentCode:
  *                 type: string
  *                 example: SE171218
@@ -44,9 +44,9 @@ const auth = require('../middlewares/auth');
  *                 example: 0907057587
  *     responses:
  *       200:
- *         description: Đăng ký thành công
+ *         description: Registration successful
  *       400:
- *         description: Lỗi validate hoặc email tồn tại
+ *         description: Validation error or email already exists
  */
 router.post('/register', user.registerUser);
 
@@ -54,7 +54,7 @@ router.post('/register', user.registerUser);
  * @swagger
  * /api/users/login:
  *   post:
- *     summary: Đăng nhập bằng Email (SCMS)
+ *     summary: Login with Email (SCMS)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -74,9 +74,9 @@ router.post('/register', user.registerUser);
  *                 example: 123456
  *     responses:
  *       200:
- *         description: Login thành công, trả về accessToken
+ *         description: Login successful, returns accessToken
  *       400:
- *         description: Sai email hoặc password
+ *         description: Invalid email or password
  */
 router.post('/login', user.login);
 
@@ -84,11 +84,11 @@ router.post('/login', user.login);
  * @swagger
  * /api/users/login-with-google:
  *   post:
- *     summary: Đăng nhập bằng Google OAuth (cho user đã có trong hệ thống)
+ *     summary: Login with Google OAuth (for existing users)
  *     tags: [Users]
  *     description: |
- *       User đã login với Google qua Supabase, FE gửi email lên để BE tạo JWT token.
- *       Chỉ áp dụng cho các user đã được đăng ký trong hệ thống (có email trong bảng users).
+ *       User has logged in with Google via Supabase, FE sends email to BE to create JWT token.
+ *       Only applies to users already registered in the system (email exists in users table).
  *     requestBody:
  *       required: true
  *       content:
@@ -100,11 +100,11 @@ router.post('/login', user.login);
  *             properties:
  *               email:
  *                 type: string
- *                 description: Email từ Google OAuth (đã được verify bởi Supabase)
+ *                 description: Email from Google OAuth (verified by Supabase)
  *                 example: student@university.edu.vn
  *     responses:
  *       200:
- *         description: Login thành công, trả về accessToken
+ *         description: Login successful, returns accessToken
  *         content:
  *           application/json:
  *             schema:
@@ -117,9 +117,9 @@ router.post('/login', user.login);
  *                 user:
  *                   type: object
  *       404:
- *         description: Email chưa được đăng ký trong hệ thống
+ *         description: Email not registered in system
  *       403:
- *         description: Tài khoản đã bị vô hiệu hóa
+ *         description: Account has been disabled
  */
 router.post('/login-with-google', user.loginWithGoogle);
 
@@ -127,13 +127,13 @@ router.post('/login-with-google', user.loginWithGoogle);
  * @swagger
  * /api/users/getprofile:
  *   get:
- *     summary: Lấy profile của user hiện tại
+ *     summary: Get current user profile
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Lấy profile thành công
+ *         description: Profile retrieved successfully
  *         content:
  *           application/json:
  *             schema:
@@ -154,7 +154,7 @@ router.get('/getprofile', auth.authMiddleWare,
  * @swagger
  * /api/users/profile:
  *   patch:
- *     summary: Cập nhật profile của user hiện tại
+ *     summary: Update current user profile
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
@@ -167,7 +167,7 @@ router.get('/getprofile', auth.authMiddleWare,
  *             properties:
  *               fullName:
  *                 type: string
- *                 example: "Nguyễn Văn A"
+ *                 example: "John Doe"
  *               phone:
  *                 type: string
  *                 example: "0901234567"
@@ -179,9 +179,9 @@ router.get('/getprofile', auth.authMiddleWare,
  *                 example: "SE123456"
  *     responses:
  *       200:
- *         description: Cập nhật profile thành công
+ *         description: Profile updated successfully
  *       400:
- *         description: Không có dữ liệu cập nhật hoặc studentCode trùng
+ *         description: No update data or studentCode already exists
  *       401:
  *         description: Unauthorized
  */
@@ -195,13 +195,13 @@ router.patch('/profile',
  * @swagger
  * /api/users/getallprofile:
  *   get:
- *     summary: Lấy tất cả user (Admin only)
+ *     summary: Get all users (Admin only)
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Lấy danh sách thành công
+ *         description: List retrieved successfully
  *       403:
  *         description: Forbidden (Not Admin)
  */
