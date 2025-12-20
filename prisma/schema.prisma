@@ -325,22 +325,6 @@ model Feedback {
   @@map("feedbacks")
 }
 
-model audit_logs {
-  id         String   @id
-  action     String
-  user_id    String?
-  user_email String?
-  details    String?
-  ip_address String?
-  user_agent String?
-  metadata   Json?
-  created_at DateTime @default(now())
-
-  @@index([action])
-  @@index([created_at])
-  @@index([user_id])
-}
-
 enum SystemRole {
   ADMIN
   USER
@@ -432,17 +416,17 @@ enum EventApprovalStatus {
 
 model AuditLog {
   id        String   @id @default(uuid())
-  action    String   // LOGIN, CREATE_CLUB, UPDATE_CLUB, DELETE_CLUB, APPROVE_FUND, BAN_USER, etc.
-  userId    String?  @map("user_id")  // null for system actions
+  action    String // LOGIN, CREATE_CLUB, UPDATE_CLUB, DELETE_CLUB, APPROVE_FUND, BAN_USER, etc.
+  userId    String?  @map("user_id") // null for system actions
   userEmail String?  @map("user_email")
-  details   String?  // Description of what happened
+  details   String? // Description of what happened
   ipAddress String?  @map("ip_address")
   userAgent String?  @map("user_agent")
-  metadata  Json?    // Additional data in JSON format
+  metadata  Json? // Additional data in JSON format
   createdAt DateTime @default(now()) @map("created_at")
 
+  @@index([action], map: "audit_logs_action_idx_v2")
+  @@index([userId], map: "audit_logs_user_id_idx_v2")
+  @@index([createdAt], map: "audit_logs_created_at_idx_v2")
   @@map("audit_logs")
-  @@index([action])
-  @@index([userId])
-  @@index([createdAt])
 }
