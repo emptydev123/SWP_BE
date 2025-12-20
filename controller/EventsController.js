@@ -352,6 +352,18 @@ exports.createEvent = async (req, res) => {
             };
         });
 
+        // Ghi nhật ký tạo sự kiện
+        const auditLogController = require('./AuditLogController');
+        auditLogController.createAuditLog({
+            action: 'CREATE_EVENT',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Tạo sự kiện: ${title} (CLB ${newEvent.club?.name || clubId})`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { eventId: newEvent.id, clubId }
+        });
+
         res.status(201).json({
             success: true,
             message: 'Tạo event thành công',
@@ -1005,6 +1017,18 @@ exports.updateEvent = async (req, res) => {
             }
         });
 
+        // Ghi nhật ký cập nhật sự kiện
+        const auditLogController = require('./AuditLogController');
+        auditLogController.createAuditLog({
+            action: 'UPDATE_EVENT',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Cập nhật sự kiện: ${updatedEvent.title}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { eventId: updatedEvent.id, clubId: updatedEvent.club?.id }
+        });
+
         res.status(200).json({
             success: true,
             message: 'Cập nhật event thành công',
@@ -1065,6 +1089,17 @@ exports.deleteEvent = async (req, res) => {
             data: {
                 isActive: false
             }
+        });
+        // Ghi nhật ký xóa sự kiện
+        const auditLogController = require('./AuditLogController');
+        auditLogController.createAuditLog({
+            action: 'DELETE_EVENT',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Xóa sự kiện: ${event.title}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { eventId }
         });
 
         res.status(200).json({

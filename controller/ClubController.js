@@ -5,6 +5,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const emailService = require('../services/emailService');
 const { paginateWithWhere } = require('../utils/paginationUtils');
+const auditLogController = require('./AuditLogController');
 
 /**
  * Parse file Excel để lấy danh sách members
@@ -538,6 +539,17 @@ exports.createClub = async (req, res) => {
             fs.unlinkSync(excelFilePath);
         }
 
+        // Ghi nhật ký tạo CLB
+        auditLogController.createAuditLog({
+            action: 'CREATE_CLUB',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Tạo CLB mới: ${name}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: result.club.id }
+        });
+
         res.status(201).json({
             success: true,
             message: "Club created successfully",
@@ -570,6 +582,85 @@ exports.createClub = async (req, res) => {
             success: false,
             message: error.message || "Internal server error",
             error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+/**
+ * Admin update basic club info (name, description, slug, logo)
+ */
+exports.updateClubBasicInfo = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const { name, description, slug, logoUrl } = req.body;
+
+        // Validate: require at least one field
+        if (!name && !description && !slug && !logoUrl && logoUrl !== "") {
+            return res.status(400).json({
+                success: false,
+                message: "Không có dữ liệu nào để cập nhật"
+            });
+        }
+
+        // Check club exists
+        const existingClub = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: { id: true, name: true, slug: true }
+        });
+
+        if (!existingClub) {
+            return res.status(404).json({ success: false, message: "Club không tồn tại" });
+        }
+
+        // If slug provided and changed, ensure unique
+        if (slug && slug !== existingClub.slug) {
+            const slugConflict = await prisma.club.findUnique({ where: { slug } });
+            if (slugConflict) {
+                return res.status(400).json({ success: false, message: "Slug đã được sử dụng" });
+            }
+        }
+
+        const dataToUpdate = {};
+        if (name !== undefined) dataToUpdate.name = name;
+        if (description !== undefined) dataToUpdate.description = description;
+        if (slug !== undefined) dataToUpdate.slug = slug || null;
+        if (logoUrl !== undefined) dataToUpdate.logoUrl = logoUrl || null;
+
+        const updatedClub = await prisma.club.update({
+            where: { id: clubId },
+            data: dataToUpdate,
+            select: {
+                id: true,
+                name: true,
+                description: true,
+                slug: true,
+                logoUrl: true,
+                leader: { select: { fullName: true, avatarUrl: true } },
+                _count: { select: { memberships: true } }
+            }
+        });
+
+        // Audit log
+        auditLogController.createAuditLog({
+            action: 'UPDATE_CLUB',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Admin cập nhật CLB ${updatedClub.name}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: updatedClub.id }
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Cập nhật thông tin CLB thành công",
+            data: updatedClub
+        });
+    } catch (error) {
+        console.error("Update Club Basic Info Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error"
         });
     }
 };
@@ -945,6 +1036,17 @@ exports.updateClubLeader = async (req, res) => {
             return updatedClub;
         });
 
+        // Ghi nhật ký cập nhật leader CLB
+        auditLogController.createAuditLog({
+            action: 'UPDATE_CLUB_LEADER',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Chuyển leader CLB ${result.name} sang userId=${newLeaderUserId}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: result.id, oldLeaderId: currentUserId, newLeaderId }
+        });
+
         res.status(200).json({
             success: true,
             message: "Leader đã được cập nhật thành công",
@@ -1025,6 +1127,17 @@ exports.configMembershipFee = async (req, res) => {
                 membershipFeeEnabled: true,
                 membershipFeeAmount: true
             }
+        });
+
+        // Ghi nhật ký cấu hình phí tham gia CLB
+        auditLogController.createAuditLog({
+            action: 'CONFIG_MEMBERSHIP_FEE',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Cấu hình phí tham gia cho CLB ${updatedClub.name}: enabled=${membershipFeeEnabled}, amount=${updatedClub.membershipFeeAmount}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: updatedClub.id }
         });
 
         res.status(200).json({
@@ -1161,6 +1274,17 @@ exports.updateMemberRole = async (req, res) => {
                     }
                 }
             }
+        });
+
+        // Ghi nhật ký cập nhật role thành viên
+        auditLogController.createAuditLog({
+            action: 'UPDATE_MEMBER_ROLE',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Cập nhật role của member ${updatedMembership.user?.email || updatedMembership.userId} trong CLB ${club.name} thành ${newRole}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: club.id, membershipId }
         });
 
         res.status(200).json({

@@ -89,6 +89,17 @@ exports.login = async (req, res) => {
             role: user.auth_role // Use auth_role field from schema
         }, secretKey, { expiresIn: '1h' })
 
+            // Log login activity
+            const auditLogController = require('./AuditLogController');
+            auditLogController.createAuditLog({
+                action: 'LOGIN',
+                userId: user.id,
+                userEmail: user.email,
+                details: `Đăng nhập thành công - ${user.fullName || user.email}`,
+                ipAddress: req.ip || req.connection.remoteAddress,
+                userAgent: req.get('user-agent')
+            }).catch(err => console.error('Failed to log login:', err));
+
         res.status(200).json({
             success: true,
             accessToken,
@@ -213,6 +224,117 @@ exports.updateProfileUser = async (req, res) => {
     } catch (error) {
         console.error(error);
         return res.status(500).json({
+            success: false,
+            message: error.message || "Internal Server Error"
+        });
+    }
+};
+
+// UPDATE USER BY ADMIN
+exports.updateUserByAdmin = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { fullName, email, phone, studentCode } = req.body;
+
+        // Validate userId
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                message: "userId là bắt buộc"
+            });
+        }
+
+        // Check user tồn tại
+        const user = await prisma.user.findUnique({
+            where: { id: userId }
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User không tồn tại"
+            });
+        }
+
+        // Build update data
+        const updateData = {};
+
+        if (fullName !== undefined && fullName.trim()) {
+            updateData.fullName = fullName.trim();
+        }
+
+        if (email !== undefined && email.trim()) {
+            // Check email unique nếu khác với email hiện tại
+            if (email !== user.email) {
+                const existingUser = await prisma.user.findUnique({
+                    where: { email }
+                });
+                if (existingUser) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Email đã tồn tại"
+                    });
+                }
+            }
+            updateData.email = email.trim();
+        }
+
+        if (phone !== undefined) {
+            updateData.phone = phone ? phone.trim() : null;
+        }
+
+        if (studentCode !== undefined) {
+            if (studentCode && studentCode.trim()) {
+                // Check studentCode unique nếu khác với studentCode hiện tại
+                if (studentCode !== user.studentCode) {
+                    const existingUser = await prisma.user.findUnique({
+                        where: { studentCode }
+                    });
+                    if (existingUser) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Mã số sinh viên đã tồn tại"
+                        });
+                    }
+                }
+                updateData.studentCode = studentCode.trim();
+            } else {
+                updateData.studentCode = null;
+            }
+        }
+
+        // Check if there's any data to update
+        if (Object.keys(updateData).length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Không có dữ liệu để cập nhật"
+            });
+        }
+
+        // Update user
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
+            data: updateData,
+            select: {
+                id: true,
+                email: true,
+                fullName: true,
+                phone: true,
+                studentCode: true,
+                isActive: true,
+                createdAt: true
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: "Cập nhật thông tin user thành công",
+            data: updatedUser
+        });
+
+    } catch (error) {
+        console.error("Update User By Admin Error:", error);
+        res.status(500).json({
             success: false,
             message: error.message || "Internal Server Error"
         });
