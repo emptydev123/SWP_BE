@@ -23,16 +23,23 @@ const parseExcelFile = (filePath) => {
             const normalizedRow = {};
             Object.keys(row).forEach(key => {
                 const lowerKey = key.toLowerCase().trim();
-                if (lowerKey.includes('email')) normalizedRow.email = row[key];
-                if (lowerKey.includes('student_code') || lowerKey.includes('studentcode')) normalizedRow.studentCode = row[key];
-                if (lowerKey.includes('phone')) normalizedRow.phone = row[key];
+                if (lowerKey.includes('email')) normalizedRow.email = String(row[key]).trim();
+                if (lowerKey.includes('student_code') || lowerKey.includes('studentcode')) normalizedRow.studentCode = String(row[key]).trim();
+                if (lowerKey.includes('phone')) normalizedRow.phone = String(row[key]).trim();
                 if (lowerKey.includes('email_verified') || lowerKey.includes('emailverified')) normalizedRow.emailVerified = row[key];
-                if (lowerKey.includes('role')) normalizedRow.role = row[key];
-                if (lowerKey.includes('is_leader') || lowerKey.includes('isleader')) normalizedRow.isLeader = row[key];
-                if (lowerKey.includes('full_name') || lowerKey.includes('fullname')) normalizedRow.fullName = row[key];
+                if (lowerKey.includes('role')) {
+                    const roleValue = String(row[key]).trim().toUpperCase();
+                    normalizedRow.role = roleValue;
+                }
+                if (lowerKey.includes('is_leader') || lowerKey.includes('isleader')) {
+                    // Chuẩn hóa giá trị isLeader thành boolean
+                    const value = String(row[key]).trim().toUpperCase();
+                    normalizedRow.isLeader = value === 'TRUE' || value === '1' || value === 'YES';
+                }
+                if (lowerKey.includes('full_name') || lowerKey.includes('fullname')) normalizedRow.fullName = String(row[key]).trim();
             });
             return normalizedRow;
-        }).filter(row => row.email); // Chỉ lấy các dòng có email
+        }).filter(row => row.email && row.email !== ''); // Chỉ lấy các dòng có email
     } catch (error) {
         throw new Error(`Lỗi đọc file Excel: ${error.message}`);
     }
@@ -133,7 +140,7 @@ exports.createClub = async (req, res) => {
         }
 
         // Tìm leader từ Excel (is_leader = true)
-        const leaderData = membersData.find(m => m.isLeader === true || m.isLeader === 'true' || m.isLeader === 1);
+        const leaderData = membersData.find(m => m.isLeader === true);
 
         if (!leaderData || !leaderData.email) {
             if (fs.existsSync(excelFilePath)) fs.unlinkSync(excelFilePath);
