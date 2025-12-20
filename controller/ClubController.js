@@ -592,10 +592,10 @@ exports.createClub = async (req, res) => {
 exports.updateClubBasicInfo = async (req, res) => {
     try {
         const { clubId } = req.params;
-        const { name, description, slug, logoUrl } = req.body;
+        const { name, description, slug, logoUrl, isActive, status } = req.body;
 
         // Validate: require at least one field
-        if (!name && !description && !slug && !logoUrl && logoUrl !== "") {
+        if (!name && !description && !slug && !logoUrl && logoUrl !== "" && isActive === undefined && status === undefined) {
             return res.status(400).json({
                 success: false,
                 message: "Không có dữ liệu nào để cập nhật"
@@ -626,6 +626,13 @@ exports.updateClubBasicInfo = async (req, res) => {
         if (slug !== undefined) dataToUpdate.slug = slug || null;
         if (logoUrl !== undefined) dataToUpdate.logoUrl = logoUrl || null;
 
+        // Handle isActive/status toggling
+        if (isActive !== undefined) {
+            dataToUpdate.isActive = !!isActive;
+        } else if (status !== undefined) {
+            dataToUpdate.isActive = (status === 'active' || status === true);
+        }
+
         const updatedClub = await prisma.club.update({
             where: { id: clubId },
             data: dataToUpdate,
@@ -635,6 +642,7 @@ exports.updateClubBasicInfo = async (req, res) => {
                 description: true,
                 slug: true,
                 logoUrl: true,
+                isActive: true,
                 leader: { select: { fullName: true, avatarUrl: true } },
                 _count: { select: { memberships: true } }
             }
@@ -678,7 +686,9 @@ exports.getAllClubs = async (req, res) => {
 
         // Build where clause
         const where = {
-            ...(isActive !== undefined ? { isActive: isActive === 'true' } : { isActive: true }),
+            ...(isActive !== undefined
+                ? { isActive: isActive === 'true' }
+                : (req.user?.auth_role === 'ADMIN' ? {} : { isActive: true })),
             ...(search && {
                 OR: [
                     { name: { contains: search, mode: 'insensitive' } },
@@ -699,6 +709,7 @@ exports.getAllClubs = async (req, res) => {
                     slug: true,
                     logoUrl: true,
                     description: true,
+                    isActive: true,
                     createdAt: true,
                     leader: {
                         select: { fullName: true, email: true }
@@ -734,10 +745,16 @@ exports.getClubDetail = async (req, res) => {
                 OR: [
                     { slug: slug },
                     { id: slug } // Cho phép tìm bằng ID nếu slug không khớp (lưu ý UUID format)
-                ],
-                isActive: true
+                ]
             },
-            include: {
+            select: {
+                id: true,
+                name: true,
+                description: true,
+                slug: true,
+                logoUrl: true,
+                isActive: true,
+                leaderUserId: true,
                 leader: {
                     select: { id: true, fullName: true, email: true, avatarUrl: true }
                 },
@@ -753,6 +770,22 @@ exports.getClubDetail = async (req, res) => {
 
         if (!club) {
             return res.status(404).json({ success: false, message: "Club not found" });
+        }
+
+        const isAdmin = req.user?.auth_role === 'ADMIN';
+        const isLeader = club.leaderUserId === req.userId;
+
+        // Nếu club đã bị vô hiệu hóa: cho phép Admin/Leader xem chi tiết để hiển thị cảnh báo, cấm người khác
+        if (!club.isActive && !isAdmin && !isLeader) {
+            return res.status(403).json({
+                success: false,
+                message: "Club đã bị vô hiệu hóa bởi admin",
+                data: {
+                    id: club.id,
+                    name: club.name,
+                    isActive: club.isActive
+                }
+            });
         }
 
         res.status(200).json({
