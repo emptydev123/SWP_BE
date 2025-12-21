@@ -560,6 +560,30 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
             });
         }
 
+        // 3.1 Kiểm tra event đã kết thúc chưa
+        if (event.endTime) {
+            const now = new Date();
+            const endTime = new Date(event.endTime);
+            if (now > endTime) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Event đã kết thúc, không thể tạo thanh toán'
+                });
+            }
+        }
+
+        // 3.2 Đóng cổng thanh toán trước giờ bắt đầu 1 giờ
+        if (event.startTime) {
+            const now = new Date();
+            const startTime = new Date(event.startTime);
+            if (startTime - now <= 60 * 60 * 1000) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Đã đóng thanh toán: event sẽ diễn ra trong vòng 1 giờ'
+                });
+            }
+        }
+
         // 4. Kiểm tra capacity nếu có
         if (event.capacity) {
             const soldTickets = await prisma.ticket.count({

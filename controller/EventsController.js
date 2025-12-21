@@ -1202,7 +1202,19 @@ exports.registerEvent = async (req, res) => {
             });
         }
 
-        // 4.2 Đóng cổng đăng ký trước giờ bắt đầu 1 giờ
+        // 4.2 Kiểm tra event đã kết thúc chưa
+        if (event.endTime) {
+            const now = new Date();
+            const endTime = new Date(event.endTime);
+            if (now > endTime) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Event đã kết thúc, không thể đăng ký hoặc thanh toán'
+                });
+            }
+        }
+
+        // 4.3 Đóng cổng đăng ký trước giờ bắt đầu 1 giờ
         if (event.startTime) {
             const now = new Date();
             const startTime = new Date(event.startTime);
