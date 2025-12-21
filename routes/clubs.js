@@ -381,6 +381,52 @@ router.post('/:clubId/members',
 
 /**
  * @swagger
+ * /api/clubs/{clubId}/members/me:
+ *   delete:
+ *     summary: User leaves club themselves
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       User leaves the club they are a member of.
+ *       - User cannot leave if they have registered for any events in this club
+ *       - User must cancel event registrations first before leaving
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     responses:
+ *       200:
+ *         description: User successfully left the club
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *       400:
+ *         description: User has registered for events or validation error
+ *       404:
+ *         description: Club not found or user is not a member
+ *       401:
+ *         description: Unauthorized
+ */
+router.delete('/:clubId/members/me',
+    auth.authMiddleWare,
+    auth.requireRole('USER', 'ADMIN'),
+    clubController.leaveClub
+);
+
+/**
+ * @swagger
  * /api/clubs/{clubId}/members/{membershipId}:
  *   delete:
  *     summary: Remove member from club (Admin or Member themselves)
@@ -430,52 +476,6 @@ router.delete('/:clubId/members/:membershipId',
     auth.authMiddleWare,
     auth.requireRole('USER', 'ADMIN'),
     clubController.removeMemberFromClub
-);
-
-/**
- * @swagger
- * /api/clubs/{clubId}/members/me:
- *   delete:
- *     summary: User leaves club themselves
- *     tags: [Clubs]
- *     security:
- *       - bearerAuth: []
- *     description: |
- *       User leaves the club they are a member of.
- *       - User cannot leave if they have registered for any events in this club
- *       - User must cancel event registrations first before leaving
- *     parameters:
- *       - in: path
- *         name: clubId
- *         required: true
- *         schema:
- *           type: string
- *         description: Club ID
- *     responses:
- *       200:
- *         description: User successfully left the club
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *                 data:
- *                   type: object
- *       400:
- *         description: User has registered for events or validation error
- *       404:
- *         description: Club not found or user is not a member
- *       401:
- *         description: Unauthorized
- */
-router.delete('/:clubId/members/me',
-    auth.authMiddleWare,
-    auth.requireRole('USER', 'ADMIN'),
-    clubController.leaveClub
 );
 
 // Admin: update basic club info
