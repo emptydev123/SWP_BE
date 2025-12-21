@@ -753,8 +753,11 @@ exports.getClubDetail = async (req, res) => {
                 description: true,
                 slug: true,
                 logoUrl: true,
+                coverUrl: true,
                 isActive: true,
                 leaderUserId: true,
+                membershipFeeEnabled: true,
+                membershipFeeAmount: true,
                 leader: {
                     select: { id: true, fullName: true, email: true, avatarUrl: true }
                 },
