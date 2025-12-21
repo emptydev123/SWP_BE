@@ -244,6 +244,240 @@ router.post('/',
     clubController.createClub
 );
 
+/**
+ * @swagger
+ * /api/clubs/{clubId}/members/import:
+ *   post:
+ *     summary: Add members to club via Excel import (Admin Only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - excelFile
+ *             properties:
+ *               excelFile:
+ *                 type: string
+ *                 format: binary
+ *                 description: Excel file containing member list. Required columns - email, student_code, phone, email_verified, role, full_name
+ *     responses:
+ *       200:
+ *         description: Members added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     club:
+ *                       type: object
+ *                     membersAdded:
+ *                       type: integer
+ *                     memberships:
+ *                       type: array
+ *       400:
+ *         description: Validation error or invalid Excel file
+ *       404:
+ *         description: Club not found
+ *       403:
+ *         description: Forbidden (Not Admin)
+ */
+router.post('/:clubId/members/import',
+    auth.authMiddleWare,
+    auth.requireRole('ADMIN'),
+    upload.single('excelFile'),
+    clubController.addMembersToClub
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/members:
+ *   post:
+ *     summary: Add single member to club manually (Admin Only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 description: Member email (required)
+ *                 example: student@university.edu.vn
+ *               fullName:
+ *                 type: string
+ *                 description: Full name (optional, defaults to email prefix if not provided)
+ *                 example: John Doe
+ *               studentCode:
+ *                 type: string
+ *                 description: Student code (optional)
+ *                 example: SE171218
+ *               phone:
+ *                 type: string
+ *                 description: Phone number (optional)
+ *                 example: 0907057587
+ *               role:
+ *                 type: string
+ *                 enum: [MEMBER, STAFF, TREASURER, ADMIN]
+ *                 description: Membership role (optional, defaults to MEMBER)
+ *                 example: MEMBER
+ *     responses:
+ *       200:
+ *         description: Member added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *       400:
+ *         description: Validation error or member already exists in club
+ *       404:
+ *         description: Club not found
+ *       403:
+ *         description: Forbidden (Not Admin)
+ */
+router.post('/:clubId/members',
+    auth.authMiddleWare,
+    auth.requireRole('ADMIN'),
+    clubController.addMemberToClub
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/members/{membershipId}:
+ *   delete:
+ *     summary: Remove member from club (Admin or Member themselves)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       Remove a member from the club. 
+ *       - Admin can remove any member
+ *       - Member can only remove themselves
+ *       - Member cannot be removed if they have registered for any events in this club
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *       - in: path
+ *         name: membershipId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Membership ID
+ *     responses:
+ *       200:
+ *         description: Member removed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *       400:
+ *         description: Member has registered for events or validation error
+ *       403:
+ *         description: Forbidden (Member trying to remove someone else)
+ *       404:
+ *         description: Club or membership not found
+ */
+router.delete('/:clubId/members/:membershipId',
+    auth.authMiddleWare,
+    auth.requireRole('USER', 'ADMIN'),
+    clubController.removeMemberFromClub
+);
+
+/**
+ * @swagger
+ * /api/clubs/{clubId}/members/me:
+ *   delete:
+ *     summary: User leaves club themselves
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       User leaves the club they are a member of.
+ *       - User cannot leave if they have registered for any events in this club
+ *       - User must cancel event registrations first before leaving
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *     responses:
+ *       200:
+ *         description: User successfully left the club
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *       400:
+ *         description: User has registered for events or validation error
+ *       404:
+ *         description: Club not found or user is not a member
+ *       401:
+ *         description: Unauthorized
+ */
+router.delete('/:clubId/members/me',
+    auth.authMiddleWare,
+    auth.requireRole('USER', 'ADMIN'),
+    clubController.leaveClub
+);
+
 // Admin: update basic club info
 router.patch('/:clubId',
     auth.authMiddleWare,
