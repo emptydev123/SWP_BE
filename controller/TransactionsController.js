@@ -560,6 +560,30 @@ async function handleEventTicketPayment(req, res, eventId, ticketType, quantity,
             });
         }
 
+        // 3.1 Kiểm tra event đã kết thúc chưa
+        if (event.endTime) {
+            const now = new Date();
+            const endTime = new Date(event.endTime);
+            if (now > endTime) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Event đã kết thúc, không thể tạo thanh toán'
+                });
+            }
+        }
+
+        // 3.2 Đóng cổng thanh toán trước giờ bắt đầu 1 giờ
+        if (event.startTime) {
+            const now = new Date();
+            const startTime = new Date(event.startTime);
+            if (startTime - now <= 60 * 60 * 1000) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Đã đóng thanh toán: event sẽ diễn ra trong vòng 1 giờ'
+                });
+            }
+        }
+
         // 4. Kiểm tra capacity nếu có
         if (event.capacity) {
             const soldTickets = await prisma.ticket.count({
@@ -932,12 +956,20 @@ exports.handleWebhook = async (req, res) => {
                     }
                 }
 
-                // Tạo ledger entry cho club
-                const club = await prisma.club.findUnique({
-                    where: { id: transaction.clubId }
+                // Tạo ledger entry cho club (nếu chưa có)
+                const existingLedger = await prisma.clubLedger.findFirst({
+                    where: { transactionId: transaction.id }
                 });
 
-                if (club && transaction.referenceTicket?.event) {
+                if (!existingLedger && transaction.clubId) {
+                    // Lấy event title từ ticket hoặc referenceTicket
+                    let eventTitle = 'Event';
+                    if (tickets.length > 0 && tickets[0].event) {
+                        eventTitle = tickets[0].event.title;
+                    } else if (transaction.referenceTicket?.event) {
+                        eventTitle = transaction.referenceTicket.event.title;
+                    }
+
                     const lastLedger = await prisma.clubLedger.findFirst({
                         where: { clubId: transaction.clubId },
                         orderBy: { createdAt: 'desc' }
@@ -952,7 +984,7 @@ exports.handleWebhook = async (req, res) => {
                             transactionId: transaction.id,
                             amount: transaction.amount,
                             balanceAfter: balanceAfter,
-                            note: `Bán vé event: ${transaction.referenceTicket.event.title}`
+                            note: `Bán vé event: ${eventTitle}`
                         }
                     });
                 }
@@ -1306,6 +1338,39 @@ exports.handleReturn = async (req, res) => {
                         }
                         updatedTickets.push(ticketData);
                     }
+                }
+
+                // Tạo ledger entry cho club (nếu chưa có)
+                const existingLedger = await prisma.clubLedger.findFirst({
+                    where: { transactionId: transaction.id }
+                });
+
+                if (!existingLedger && transaction.clubId) {
+                    // Lấy event title từ ticket hoặc referenceTicket
+                    let eventTitle = 'Event';
+                    if (tickets.length > 0 && tickets[0].event) {
+                        eventTitle = tickets[0].event.title;
+                    } else if (transaction.referenceTicket?.event) {
+                        eventTitle = transaction.referenceTicket.event.title;
+                    }
+
+                    const lastLedger = await prisma.clubLedger.findFirst({
+                        where: { clubId: transaction.clubId },
+                        orderBy: { createdAt: 'desc' }
+                    });
+
+                    const balanceAfter = (lastLedger?.balanceAfter || 0) + transaction.amount;
+
+                    await prisma.clubLedger.create({
+                        data: {
+                            clubId: transaction.clubId,
+                            type: 'INCOME',
+                            transactionId: transaction.id,
+                            amount: transaction.amount,
+                            balanceAfter: balanceAfter,
+                            note: `Bán vé event: ${eventTitle}`
+                        }
+                    });
                 }
 
                 // Redirect về FE với kết quả thành công
