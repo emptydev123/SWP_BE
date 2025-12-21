@@ -626,6 +626,11 @@ exports.getEventDetail = async (req, res) => {
                             }
                         }
                     }
+                },
+                fundRequests: {
+                    include: {
+                        items: true
+                    }
                 }
             }
         });
@@ -657,9 +662,21 @@ exports.getEventDetail = async (req, res) => {
             }
         }
 
+        // Chuẩn hóa fundRequests: đổi amount -> totalAmount
+        const mappedFundRequests = event.fundRequests?.map(fr => {
+            const { amount, ...rest } = fr;
+            return {
+                ...rest,
+                totalAmount: amount
+            };
+        });
+
         res.status(200).json({
             success: true,
-            data: event
+            data: {
+                ...event,
+                fundRequests: mappedFundRequests
+            }
         });
 
     } catch (error) {
@@ -725,12 +742,13 @@ exports.updateEvent = async (req, res) => {
             });
         }
 
-        if (event.approvalStatus !== 'PENDING' && req.user?.auth_role !== 'ADMIN') {
-            return res.status(400).json({
-                success: false,
-                message: 'Event đã được duyệt/từ chối, không thể chỉnh sửa'
-            });
-        }
+        // DISABLED: Allow editing events at any approval status
+        // if (event.approvalStatus !== 'PENDING' && req.user?.auth_role !== 'ADMIN') {
+        //     return res.status(400).json({
+        //         success: false,
+        //         message: 'Event đã được duyệt/từ chối, không thể chỉnh sửa'
+        //     });
+        // }
 
         // 2.1. Kiểm tra số vé đã bán/đăng ký để quyết định field nào được phép update
         const soldTicketsCount = await prisma.ticket.count({
@@ -776,12 +794,13 @@ exports.updateEvent = async (req, res) => {
                 });
             }
 
-            if (startTime !== undefined || endTime !== undefined) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Không thể thay đổi thời gian diễn ra khi đã có người đăng ký hoặc event sắp diễn ra'
-                });
-            }
+            // DISABLED: Allow updating startTime/endTime at any time
+            // if (startTime !== undefined || endTime !== undefined) {
+            //     return res.status(400).json({
+            //         success: false,
+            //         message: 'Không thể thay đổi thời gian diễn ra khi đã có người đăng ký hoặc event sắp diễn ra'
+            //     });
+            // }
         }
 
         // 3. Validate pricingType và price nếu có thay đổi
@@ -2785,7 +2804,8 @@ exports.getClubLedgerEntries = async (req, res) => {
                         select: {
                             id: true,
                             title: true,
-                            amount: true
+                            amount: true,
+                            eventId: true
                         }
                     }
                 },
@@ -2818,7 +2838,8 @@ exports.getClubLedgerEntries = async (req, res) => {
             fundRequest: entry.fundRequest ? {
                 id: entry.fundRequest.id,
                 title: entry.fundRequest.title,
-                totalAmount: entry.fundRequest.amount
+                totalAmount: entry.fundRequest.amount,
+                eventId: entry.fundRequest.eventId
             } : null
         }));
 
