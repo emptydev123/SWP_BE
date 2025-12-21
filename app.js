@@ -4,11 +4,10 @@ var express = require('express');
 var path = require('path');
 var cookieParser = require('cookie-parser');
 var logger = require('morgan');
-const dbConnect = require('./DB/db')
+// const { connectDB } = require('./DB/db')
 const routes = require('./router')
 var app = express();
 var cors = require('cors');
-const admin = require('./firebase/firebase')
 const swaggerDocs = require('./swagger/config');
 const bodyParser = require("body-parser");
 // view engine setup
@@ -20,14 +19,34 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(bodyParser.json())
 app.use(express.static(path.join(__dirname, 'public')));
+// Serve static uploads (images/proof)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.use(cors());
 
 // connect DB
-dbConnect()
+// connectDB()
 app.use('/api', routes)
 // swagger
 swaggerDocs(app)
+
+// Start job định kỳ
+if (process.env.NODE_ENV !== 'test') {
+  const { cancelExpiredTransactions } = require('./jobs/cancelExpiredTransactions');
+  const { completeFinishedEvents } = require('./jobs/completeFinishedEvents');
+  console.log('[App] Đã khởi động job cancel expired transactions (chạy mỗi 1 phút)');
+  // Chạy ngay lần đầu
+  cancelExpiredTransactions();
+  // Sau đó chạy mỗi 1 phút
+  setInterval(cancelExpiredTransactions, 60 * 1000); // 60 giây = 1 phút
+
+  console.log('[App] Đã khởi động job complete finished events (chạy mỗi 5 phút)');
+  // Chạy ngay lần đầu
+  completeFinishedEvents();
+  // Sau đó chạy mỗi 5 phút
+  setInterval(completeFinishedEvents, 5 * 60 * 1000);
+}
+
 // catch 404 and forward to error handler
 app.use(function (req, res, next) {
   next(createError(404));
@@ -35,13 +54,16 @@ app.use(function (req, res, next) {
 
 // error handler
 app.use(function (err, req, res, next) {
-  // set locals, only providing error in development
-  res.locals.message = err.message;
-  res.locals.error = req.app.get('env') === 'development' ? err : {};
+  // Log error để debug
+  console.error('Error:', err);
 
-  // render the error page
+  // Trả về JSON thay vì render view (phù hợp với API)
   res.status(err.status || 500);
-  res.render('error');
+  res.json({
+    success: false,
+    message: err.message || 'Internal Server Error',
+    error: req.app.get('env') === 'development' ? err.stack : {}
+  });
 });
 // app.listen(PORT, () => {
 //   console.log(` Server running on http://localhost:${PORT}`);

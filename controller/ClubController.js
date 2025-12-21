@@ -1,0 +1,1479 @@
+const prisma = require('../prisma/client');
+const XLSX = require('xlsx');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const emailService = require('../services/emailService');
+const { paginateWithWhere } = require('../utils/paginationUtils');
+const auditLogController = require('./AuditLogController');
+
+/**
+ * Parse file Excel để lấy danh sách members
+ * @param {string} filePath - Đường dẫn file Excel
+ * @returns {Array} - Mảng các object member
+ */
+const parseExcelFile = (filePath) => {
+    try {
+        const workbook = XLSX.readFile(filePath);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet);
+
+        // Chuẩn hóa tên cột (case-insensitive)
+        return data.map(row => {
+            const normalizedRow = {};
+            Object.keys(row).forEach(key => {
+                const lowerKey = key.toLowerCase().trim();
+                if (lowerKey.includes('email')) normalizedRow.email = String(row[key]).trim();
+                if (lowerKey.includes('student_code') || lowerKey.includes('studentcode')) normalizedRow.studentCode = String(row[key]).trim();
+                if (lowerKey.includes('phone')) normalizedRow.phone = String(row[key]).trim();
+                if (lowerKey.includes('email_verified') || lowerKey.includes('emailverified')) normalizedRow.emailVerified = row[key];
+                if (lowerKey.includes('role')) {
+                    const roleValue = String(row[key]).trim().toUpperCase();
+                    normalizedRow.role = roleValue;
+                }
+                if (lowerKey.includes('is_leader') || lowerKey.includes('isleader')) {
+                    // Chuẩn hóa giá trị isLeader thành boolean
+                    const value = String(row[key]).trim().toUpperCase();
+                    normalizedRow.isLeader = value === 'TRUE' || value === '1' || value === 'YES';
+                }
+                if (lowerKey.includes('full_name') || lowerKey.includes('fullname')) normalizedRow.fullName = String(row[key]).trim();
+            });
+            return normalizedRow;
+        }).filter(row => row.email && row.email !== ''); // Chỉ lấy các dòng có email
+    } catch (error) {
+        throw new Error(`Lỗi đọc file Excel: ${error.message}`);
+    }
+};
+
+/**
+ * Tạo mật khẩu mặc định
+ */
+const generateDefaultPassword = () => {
+    return 'Student@123'; // Mật khẩu mặc định
+};
+
+/**
+ * Tạo Club mới với import Excel (Admin Only)
+ * - Tạo record Club
+ * - Import members từ Excel file
+ * - Tạo user nếu chưa tồn tại
+ * - Tạo ClubMembership cho tất cả members
+ * - Gửi email thông báo
+ */
+exports.createClub = async (req, res) => {
+    let excelFilePath = null;
+
+    try {
+        const { name, description, slug, logoUrl } = req.body;
+        const excelFile = req.file;
+
+        // Validate input
+        if (!name) {
+            return res.status(400).json({ success: false, message: "Tên club là bắt buộc" });
+        }
+
+        if (!excelFile) {
+            return res.status(400).json({ success: false, message: "Vui lòng upload file Excel" });
+        }
+
+        excelFilePath = excelFile.path;
+
+        // Parse Excel file trước để lấy danh sách email
+        const membersData = parseExcelFile(excelFilePath);
+
+        if (membersData.length === 0) {
+            if (fs.existsSync(excelFilePath)) fs.unlinkSync(excelFilePath);
+            return res.status(400).json({ success: false, message: "File Excel không có dữ liệu hợp lệ" });
+        }
+
+        // Check Name unique (name đã có @unique trong schema)
+        const existingClubByName = await prisma.club.findUnique({
+            where: { name },
+            include: {
+                memberships: {
+                    select: {
+                        user: {
+                            select: { email: true }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (existingClubByName) {
+            // Kiểm tra xem các email trong Excel có trùng với tất cả thành viên của club đã tồn tại không
+            const excelEmails = new Set(membersData.map(m => m.email).filter(e => e));
+            const existingClubEmails = new Set(
+                existingClubByName.memberships.map(m => m.user.email).filter(e => e)
+            );
+
+            // So sánh số lượng và các email
+            const isDuplicateMembers =
+                excelEmails.size === existingClubEmails.size &&
+                [...excelEmails].every(email => existingClubEmails.has(email));
+
+            if (isDuplicateMembers) {
+                // Xóa file tạm
+                if (fs.existsSync(excelFilePath)) fs.unlinkSync(excelFilePath);
+                return res.status(400).json({
+                    success: false,
+                    message: `Club với tên "${name}" và danh sách thành viên này đã tồn tại. Vui lòng chọn tên khác hoặc thay đổi danh sách thành viên.`
+                });
+            } else {
+                // Tên trùng nhưng thành viên khác → chỉ báo tên trùng
+                if (fs.existsSync(excelFilePath)) fs.unlinkSync(excelFilePath);
+                return res.status(400).json({
+                    success: false,
+                    message: `Club với tên "${name}" đã tồn tại. Vui lòng chọn tên khác.`
+                });
+            }
+        }
+
+        // Check Slug unique
+        if (slug) {
+            const existingClub = await prisma.club.findUnique({ where: { slug } });
+            if (existingClub) {
+                // Xóa file tạm
+                if (fs.existsSync(excelFilePath)) fs.unlinkSync(excelFilePath);
+                return res.status(400).json({ success: false, message: "Club slug already exists" });
+            }
+        }
+
+        // Tìm leader từ Excel (is_leader = true)
+        const leaderData = membersData.find(m => m.isLeader === true);
+
+        if (!leaderData || !leaderData.email) {
+            if (fs.existsSync(excelFilePath)) fs.unlinkSync(excelFilePath);
+            return res.status(400).json({ success: false, message: "Không tìm thấy leader trong file Excel (cần có is_leader = true)" });
+        }
+
+        const defaultPassword = generateDefaultPassword();
+        const salt = await bcrypt.genSalt(10);
+        const hashPassword = await bcrypt.hash(defaultPassword, salt);
+
+        // Pre-fetch: Lấy tất cả studentCodes và emails đã tồn tại để tránh query nhiều lần trong transaction
+        const allStudentCodes = membersData
+            .map(m => m.studentCode)
+            .filter(code => code && code.trim() !== '');
+
+        const allEmails = membersData
+            .map(m => m.email)
+            .filter(email => email && email.trim() !== '');
+
+        const existingStudentCodes = new Set();
+        const existingUsersMap = new Map(); // Map email -> user object
+
+        // Pre-fetch tất cả users đã tồn tại (theo email và studentCode)
+        if (allEmails.length > 0 || allStudentCodes.length > 0) {
+            const existingUsers = await prisma.user.findMany({
+                where: {
+                    OR: [
+                        { email: { in: allEmails } },
+                        { studentCode: { in: allStudentCodes } }
+                    ]
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    studentCode: true
+                }
+            });
+
+            existingUsers.forEach(u => {
+                if (u.email) existingUsersMap.set(u.email, u);
+                if (u.studentCode) existingStudentCodes.add(u.studentCode);
+            });
+        }
+
+        // Transaction: Tạo Club + Tạo/Cập nhật Users + Tạo Memberships + Gửi email
+        // Tăng timeout lên 30 giây để xử lý nhiều members
+        const result = await prisma.$transaction(
+            async (tx) => {
+                // 1. Tạo hoặc tìm Leader User (dùng Map đã pre-fetch)
+                let leaderUser = existingUsersMap.get(leaderData.email) || null;
+                const isNewLeader = !leaderUser;
+
+                if (!leaderUser) {
+                    // Kiểm tra studentCode đã tồn tại chưa (dùng Set đã pre-fetch)
+                    let studentCodeToUse = leaderData.studentCode || null;
+                    if (studentCodeToUse && existingStudentCodes.has(studentCodeToUse)) {
+                        // Nếu studentCode đã tồn tại, bỏ qua (set null) để tránh lỗi unique constraint
+                        console.warn(`Student code ${studentCodeToUse} đã tồn tại, bỏ qua cho user ${leaderData.email}`);
+                        studentCodeToUse = null;
+                    }
+
+                    // Tạo user mới cho leader (dùng try-catch để handle unique constraint nếu có)
+                    try {
+                        leaderUser = await tx.user.create({
+                            data: {
+                                email: leaderData.email,
+                                passwordHash: hashPassword,
+                                fullName: leaderData.fullName || leaderData.email.split('@')[0],
+                                studentCode: studentCodeToUse,
+                                phone: leaderData.phone || null,
+                                emailVerified: false,
+                                isActive: true,
+                                auth_role: 'USER' // Force auth_role = USER, không phụ thuộc vào Excel
+                            }
+                        });
+                        // Update Map sau khi tạo user mới
+                        existingUsersMap.set(leaderData.email, leaderUser);
+                    } catch (createError) {
+                        // Xử lý unique constraint error
+                        if (createError.code === 'P2002') {
+                            const target = createError.meta?.target || [];
+
+                            if (target.includes('email')) {
+                                // Email đã tồn tại, tìm lại user đó
+                                console.warn(`Email ${leaderData.email} đã tồn tại, tìm lại user`);
+                                leaderUser = await tx.user.findUnique({ where: { email: leaderData.email } });
+                                if (leaderUser) {
+                                    // Update emailVerified = true
+                                    leaderUser = await tx.user.update({
+                                        where: { id: leaderUser.id },
+                                        data: { emailVerified: true }
+                                    });
+                                    // Update Map
+                                    existingUsersMap.set(leaderData.email, leaderUser);
+                                } else {
+                                    throw new Error(`Không tìm thấy user với email ${leaderData.email} sau khi bị unique constraint`);
+                                }
+                            } else if (target.includes('student_code')) {
+                                // StudentCode đã tồn tại, thử lại với studentCode = null
+                                console.warn(`Unique constraint error cho studentCode, thử lại với studentCode = null cho ${leaderData.email}`);
+                                try {
+                                    leaderUser = await tx.user.create({
+                                        data: {
+                                            email: leaderData.email,
+                                            passwordHash: hashPassword,
+                                            fullName: leaderData.fullName || leaderData.email.split('@')[0],
+                                            studentCode: null, // Bỏ qua studentCode
+                                            phone: leaderData.phone || null,
+                                            emailVerified: false,
+                                            isActive: true,
+                                            auth_role: 'USER' // Force auth_role = USER, không phụ thuộc vào Excel
+                                        }
+                                    });
+                                    // Update Map
+                                    existingUsersMap.set(leaderData.email, leaderUser);
+                                } catch (retryError) {
+                                    // Nếu vẫn lỗi (có thể do email), tìm lại user
+                                    if (retryError.code === 'P2002' && retryError.meta?.target?.includes('email')) {
+                                        leaderUser = await tx.user.findUnique({ where: { email: leaderData.email } });
+                                        if (leaderUser) {
+                                            leaderUser = await tx.user.update({
+                                                where: { id: leaderUser.id },
+                                                data: { emailVerified: true }
+                                            });
+                                            existingUsersMap.set(leaderData.email, leaderUser);
+                                        }
+                                    } else {
+                                        throw retryError;
+                                    }
+                                }
+                            } else {
+                                throw createError; // Ném lại lỗi khác
+                            }
+                        } else {
+                            throw createError; // Ném lại lỗi khác
+                        }
+                    }
+                } else {
+                    // Cập nhật emailVerified = true nếu user đã tồn tại
+                    leaderUser = await tx.user.update({
+                        where: { id: leaderUser.id },
+                        data: { emailVerified: true }
+                    });
+                }
+
+                // 2. Tạo Club
+                const newClub = await tx.club.create({
+                    data: {
+                        name,
+                        slug: slug || name.toLowerCase().replace(/ /g, '-').replace(/[^a-z0-9-]/g, ''),
+                        description,
+                        logoUrl,
+                        leaderUserId: leaderUser.id,
+                        createdById: req.userId
+                    }
+                });
+
+                // 2.1. Tạo ledger entry với quỹ ban đầu 500000 VND
+                const initialFundAmount = 500000;
+                await tx.clubLedger.create({
+                    data: {
+                        clubId: newClub.id,
+                        type: 'INCOME',
+                        amount: initialFundAmount,
+                        balanceAfter: initialFundAmount,
+                        note: 'Initial fund for new club'
+                    }
+                });
+
+                // 3. Xử lý tất cả members từ Excel
+                const membershipResults = [];
+                const emailResults = [];
+
+                // Thêm leader vào emailQueue nếu là user mới
+                emailResults.push({
+                    email: leaderData.email,
+                    isNewUser: isNewLeader,
+                    password: isNewLeader ? defaultPassword : null
+                });
+
+                for (const memberData of membersData) {
+                    if (!memberData.email) continue;
+
+                    const isLeader = memberData.isLeader === true || memberData.isLeader === 'true' || memberData.isLeader === 1;
+
+                    // Skip leader vì đã xử lý riêng ở phần đầu
+                    if (isLeader && memberData.email === leaderData.email) {
+                        // Leader đã được xử lý, chỉ cần tạo membership nếu chưa có
+                        const existingMembership = await tx.clubMembership.findUnique({
+                            where: {
+                                clubId_userId: {
+                                    clubId: newClub.id,
+                                    userId: leaderUser.id
+                                }
+                            }
+                        });
+
+                        if (!existingMembership) {
+                            await tx.clubMembership.create({
+                                data: {
+                                    clubId: newClub.id,
+                                    userId: leaderUser.id,
+                                    role: 'LEADER',
+                                    status: 'ACTIVE',
+                                    joinedAt: new Date(),
+                                    activatedAt: new Date()
+                                }
+                            });
+                        }
+
+                        membershipResults.push({
+                            email: memberData.email,
+                            role: 'LEADER',
+                            isNewUser: isNewLeader,
+                            isLeader: true
+                        });
+                        continue; // Skip phần xử lý user vì đã xử lý rồi
+                    }
+
+                    const membershipRole = isLeader ? 'LEADER' : 'MEMBER';
+
+                    // Tạo hoặc tìm User (dùng Map đã pre-fetch, không query database)
+                    let user = existingUsersMap.get(memberData.email) || null;
+                    const isNewUser = !user;
+
+                    if (!user) {
+                        // Kiểm tra studentCode đã tồn tại chưa (dùng Set đã pre-fetch)
+                        let studentCodeToUse = memberData.studentCode || null;
+                        if (studentCodeToUse && existingStudentCodes.has(studentCodeToUse)) {
+                            // Nếu studentCode đã tồn tại, bỏ qua (set null) để tránh lỗi unique constraint
+                            console.warn(`Student code ${studentCodeToUse} đã tồn tại, bỏ qua cho user ${memberData.email}`);
+                            studentCodeToUse = null;
+                        }
+
+                        // Tạo user mới (dùng try-catch để handle unique constraint nếu có)
+                        try {
+                            user = await tx.user.create({
+                                data: {
+                                    email: memberData.email,
+                                    passwordHash: hashPassword,
+                                    fullName: memberData.fullName || memberData.email.split('@')[0],
+                                    studentCode: studentCodeToUse,
+                                    phone: memberData.phone || null,
+                                    emailVerified: false,
+                                    isActive: true,
+                                    auth_role: 'USER' // Force auth_role = USER, không phụ thuộc vào Excel
+                                }
+                            });
+                            // Update Map sau khi tạo user mới để tránh duplicate
+                            existingUsersMap.set(memberData.email, user);
+                        } catch (createError) {
+                            // Xử lý unique constraint error
+                            if (createError.code === 'P2002') {
+                                const target = createError.meta?.target || [];
+
+                                if (target.includes('email')) {
+                                    // Email đã tồn tại, tìm lại user đó
+                                    console.warn(`Email ${memberData.email} đã tồn tại, tìm lại user`);
+                                    user = await tx.user.findUnique({ where: { email: memberData.email } });
+                                    if (user) {
+                                        // Update emailVerified = true
+                                        user = await tx.user.update({
+                                            where: { id: user.id },
+                                            data: { emailVerified: true }
+                                        });
+                                        // Update Map
+                                        existingUsersMap.set(memberData.email, user);
+                                    } else {
+                                        throw new Error(`Không tìm thấy user với email ${memberData.email} sau khi bị unique constraint`);
+                                    }
+                                } else if (target.includes('student_code')) {
+                                    // StudentCode đã tồn tại, thử lại với studentCode = null
+                                    console.warn(`Unique constraint error cho studentCode, thử lại với studentCode = null cho ${memberData.email}`);
+                                    try {
+                                        user = await tx.user.create({
+                                            data: {
+                                                email: memberData.email,
+                                                passwordHash: hashPassword,
+                                                fullName: memberData.fullName || memberData.email.split('@')[0],
+                                                studentCode: null, // Bỏ qua studentCode
+                                                phone: memberData.phone || null,
+                                                emailVerified: false,
+                                                isActive: true,
+                                                auth_role: 'USER' // Force auth_role = USER, không phụ thuộc vào Excel
+                                            }
+                                        });
+                                        // Update Map
+                                        existingUsersMap.set(memberData.email, user);
+                                    } catch (retryError) {
+                                        // Nếu vẫn lỗi (có thể do email), tìm lại user
+                                        if (retryError.code === 'P2002' && retryError.meta?.target?.includes('email')) {
+                                            user = await tx.user.findUnique({ where: { email: memberData.email } });
+                                            if (user) {
+                                                user = await tx.user.update({
+                                                    where: { id: user.id },
+                                                    data: { emailVerified: true }
+                                                });
+                                                existingUsersMap.set(memberData.email, user);
+                                            }
+                                        } else {
+                                            throw retryError;
+                                        }
+                                    }
+                                } else {
+                                    throw createError; // Ném lại lỗi khác
+                                }
+                            } else {
+                                throw createError; // Ném lại lỗi khác
+                            }
+                        }
+                    } else {
+                        // Cập nhật emailVerified = true nếu user đã tồn tại
+                        user = await tx.user.update({
+                            where: { id: user.id },
+                            data: { emailVerified: true }
+                        });
+                    }
+
+                    // Tạo ClubMembership (hoặc update nếu đã tồn tại)
+                    const existingMembership = await tx.clubMembership.findUnique({
+                        where: {
+                            clubId_userId: {
+                                clubId: newClub.id,
+                                userId: user.id
+                            }
+                        }
+                    });
+
+                    if (!existingMembership) {
+                        await tx.clubMembership.create({
+                            data: {
+                                clubId: newClub.id,
+                                userId: user.id,
+                                role: membershipRole,
+                                status: 'ACTIVE',
+                                joinedAt: new Date(),
+                                activatedAt: new Date()
+                            }
+                        });
+                    } else {
+                        // Update membership nếu đã tồn tại
+                        await tx.clubMembership.update({
+                            where: { id: existingMembership.id },
+                            data: {
+                                role: membershipRole,
+                                status: 'ACTIVE',
+                                activatedAt: new Date()
+                            }
+                        });
+                    }
+
+                    membershipResults.push({
+                        email: memberData.email,
+                        role: membershipRole,
+                        isNewUser,
+                        isLeader
+                    });
+
+                    // Lưu thông tin để gửi email sau
+                    emailResults.push({
+                        email: memberData.email,
+                        isNewUser,
+                        password: isNewUser ? defaultPassword : null
+                    });
+                }
+
+                return {
+                    club: newClub,
+                    memberships: membershipResults,
+                    emailQueue: emailResults
+                };
+            },
+            {
+                maxWait: 10000, // 10 giây chờ transaction bắt đầu
+                timeout: 30000, // 30 giây timeout cho transaction
+            });
+
+        // 4. Gửi email thông báo cho tất cả members (ngoài transaction để không block)
+        const emailPromises = result.emailQueue.map(member =>
+            emailService.sendWelcomeToClubEmail(
+                member.email,
+                name,
+                member.password,
+                member.isNewUser
+            )
+        );
+
+        // Gửi email không đồng bộ, không chờ kết quả
+        Promise.all(emailPromises).catch(err => {
+            console.error('Lỗi gửi email:', err);
+        });
+
+        // Xóa file Excel tạm
+        if (fs.existsSync(excelFilePath)) {
+            fs.unlinkSync(excelFilePath);
+        }
+
+        // Ghi nhật ký tạo CLB
+        auditLogController.createAuditLog({
+            action: 'CREATE_CLUB',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Tạo CLB mới: ${name}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: result.club.id }
+        });
+
+        res.status(201).json({
+            success: true,
+            message: "Club created successfully",
+            data: {
+                club: result.club,
+                membersAdded: result.memberships.length,
+                memberships: result.memberships
+            }
+        });
+
+    } catch (error) {
+        console.error("Create Club Error:", error);
+        console.error("Error Stack:", error.stack);
+        console.error("Error Details:", {
+            name: error.name,
+            message: error.message,
+            code: error.code
+        });
+
+        // Xóa file tạm nếu có lỗi
+        if (excelFilePath && fs.existsSync(excelFilePath)) {
+            try {
+                fs.unlinkSync(excelFilePath);
+            } catch (unlinkError) {
+                console.error("Error deleting temp file:", unlinkError);
+            }
+        }
+
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error",
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+/**
+ * Admin update basic club info (name, description, slug, logo)
+ */
+exports.updateClubBasicInfo = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const { name, description, slug, logoUrl, isActive, status } = req.body;
+
+        // Validate: require at least one field
+        if (!name && !description && !slug && !logoUrl && logoUrl !== "" && isActive === undefined && status === undefined) {
+            return res.status(400).json({
+                success: false,
+                message: "Không có dữ liệu nào để cập nhật"
+            });
+        }
+
+        // Check club exists
+        const existingClub = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: { id: true, name: true, slug: true }
+        });
+
+        if (!existingClub) {
+            return res.status(404).json({ success: false, message: "Club không tồn tại" });
+        }
+
+        // If slug provided and changed, ensure unique
+        if (slug && slug !== existingClub.slug) {
+            const slugConflict = await prisma.club.findUnique({ where: { slug } });
+            if (slugConflict) {
+                return res.status(400).json({ success: false, message: "Slug đã được sử dụng" });
+            }
+        }
+
+        const dataToUpdate = {};
+        if (name !== undefined) dataToUpdate.name = name;
+        if (description !== undefined) dataToUpdate.description = description;
+        if (slug !== undefined) dataToUpdate.slug = slug || null;
+        if (logoUrl !== undefined) dataToUpdate.logoUrl = logoUrl || null;
+
+        // Handle isActive/status toggling
+        if (isActive !== undefined) {
+            dataToUpdate.isActive = !!isActive;
+        } else if (status !== undefined) {
+            dataToUpdate.isActive = (status === 'active' || status === true);
+        }
+
+        const updatedClub = await prisma.club.update({
+            where: { id: clubId },
+            data: dataToUpdate,
+            select: {
+                id: true,
+                name: true,
+                description: true,
+                slug: true,
+                logoUrl: true,
+                isActive: true,
+                leader: { select: { fullName: true, avatarUrl: true } },
+                _count: { select: { memberships: true } }
+            }
+        });
+
+        // Audit log
+        auditLogController.createAuditLog({
+            action: 'UPDATE_CLUB',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Admin cập nhật CLB ${updatedClub.name}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: updatedClub.id }
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Cập nhật thông tin CLB thành công",
+            data: updatedClub
+        });
+    } catch (error) {
+        console.error("Update Club Basic Info Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+/**
+ * Lấy danh sách tất cả Clubs (Public)
+ * - Có thể filter, search sau này
+ */
+/**
+ * Lấy danh sách tất cả CLB (Public) - Có phân trang
+ */
+exports.getAllClubs = async (req, res) => {
+    try {
+        const { search, isActive } = req.query;
+
+        // Build where clause
+        const where = {
+            ...(isActive !== undefined
+                ? { isActive: isActive === 'true' }
+                : (req.user?.auth_role === 'ADMIN' ? {} : { isActive: true })),
+            ...(search && {
+                OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { description: { contains: search, mode: 'insensitive' } }
+                ]
+            })
+        };
+
+        // Sử dụng pagination utility
+        const result = await paginateWithWhere(
+            prisma.club,
+            where,
+            req.query,
+            {
+                select: {
+                    id: true,
+                    name: true,
+                    slug: true,
+                    logoUrl: true,
+                    description: true,
+                    isActive: true,
+                    createdAt: true,
+                    leader: {
+                        select: { fullName: true, email: true }
+                    },
+                    _count: {
+                        select: { memberships: true } // Đếm số thành viên
+                    }
+                },
+                orderBy: { createdAt: 'desc' },
+                defaultLimit: 10,
+                maxLimit: 50
+            }
+        );
+
+        res.status(200).json({
+            success: true,
+            ...result
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Lấy chi tiết Club theo Slug hoặc ID (Public)
+ */
+exports.getClubDetail = async (req, res) => {
+    try {
+        const { slug } = req.params; // Có thể là id hoặc slug
+
+        const club = await prisma.club.findFirst({
+            where: {
+                OR: [
+                    { slug: slug },
+                    { id: slug } // Cho phép tìm bằng ID nếu slug không khớp (lưu ý UUID format)
+                ]
+            },
+            select: {
+                id: true,
+                name: true,
+                description: true,
+                slug: true,
+                logoUrl: true,
+                coverUrl: true,
+                isActive: true,
+                leaderUserId: true,
+                membershipFeeEnabled: true,
+                membershipFeeAmount: true,
+                leader: {
+                    select: { id: true, fullName: true, email: true, avatarUrl: true }
+                },
+                socialLinks: true, // Lấy link MXH
+                _count: {
+                    select: {
+                        memberships: true,
+                        events: true
+                    }
+                }
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club not found" });
+        }
+
+        const isAdmin = req.user?.auth_role === 'ADMIN';
+        const isLeader = club.leaderUserId === req.userId;
+
+        // Nếu club đã bị vô hiệu hóa: cho phép Admin/Leader xem chi tiết để hiển thị cảnh báo, cấm người khác
+        if (!club.isActive && !isAdmin && !isLeader) {
+            return res.status(403).json({
+                success: false,
+                message: "Club không còn hoạt động",
+                data: {
+                    id: club.id,
+                    name: club.name,
+                    isActive: club.isActive
+                }
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            data: club
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Lấy danh sách members của một club
+ * - ADMIN: xem được tất cả
+ * - Leader của club: xem được members club đó
+ * - Member của club: xem được members cùng club
+ * - Có phân trang
+ */
+exports.getClubMembers = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const { status } = req.query; // optional: ACTIVE, PENDING_PAYMENT,...
+        const userId = req.userId;
+
+        // 1. Kiểm tra club tồn tại
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: {
+                id: true,
+                name: true,
+                leaderUserId: true
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({
+                success: false,
+                message: "Club không tồn tại"
+            });
+        }
+
+        // 2. Kiểm tra quyền xem:
+        // - ADMIN luôn được phép
+        // - Leader của club
+        // - Member ACTIVE của club
+        let hasAccess = false;
+        if (req.user.auth_role === 'ADMIN' || club.leaderUserId === userId) {
+            hasAccess = true;
+        } else {
+            const membership = await prisma.clubMembership.findFirst({
+                where: {
+                    clubId: clubId,
+                    userId: userId,
+                    status: 'ACTIVE'
+                },
+                select: { id: true }
+            });
+            if (membership) hasAccess = true;
+        }
+
+        if (!hasAccess) {
+            return res.status(403).json({
+                success: false,
+                message: "Bạn không có quyền xem danh sách thành viên của club này"
+            });
+        }
+
+        // 3. Lấy danh sách members với phân trang
+        const where = {
+            clubId: clubId,
+            ...(status && { status: status })
+        };
+
+        const result = await paginateWithWhere(
+            prisma.clubMembership,
+            where,
+            req.query,
+            {
+                select: {
+                    id: true,
+                    clubId: true,
+                    userId: true,
+                    role: true,
+                    status: true,
+                    joinedAt: true,
+                    activatedAt: true,
+                    notes: true,
+                    user: {
+                        select: {
+                            id: true,
+                            email: true,
+                            fullName: true,
+                            studentCode: true,
+                            phone: true,
+                            avatarUrl: true
+                        }
+                    }
+                },
+                orderBy: { createdAt: 'desc' },
+                defaultLimit: 10,
+                maxLimit: 100
+            }
+        );
+
+        return res.status(200).json({
+            success: true,
+            ...result
+        });
+    } catch (error) {
+        console.error("Get Club Members Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+/**
+ * Update leader của club (Leader hiện tại chuyển quyền cho member khác)
+ */
+exports.updateClubLeader = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const { newLeaderUserId } = req.body;
+        const currentUserId = req.userId; // Leader hiện tại
+
+        if (!newLeaderUserId) {
+            return res.status(400).json({
+                success: false,
+                message: "newLeaderUserId là bắt buộc"
+            });
+        }
+
+        // Kiểm tra club có tồn tại không
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: {
+                id: true,
+                name: true,
+                leaderUserId: true
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club không tồn tại" });
+        }
+
+        // Kiểm tra user hiện tại có phải leader không
+        if (club.leaderUserId !== currentUserId && req.user.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: "Chỉ club leader hiện tại mới có quyền chuyển quyền leader"
+            });
+        }
+
+        // Không cho chuyển cho chính mình
+        if (newLeaderUserId === currentUserId) {
+            return res.status(400).json({
+                success: false,
+                message: "Bạn đã là leader của club này rồi"
+            });
+        }
+
+        // Kiểm tra user mới có tồn tại không
+        const newLeader = await prisma.user.findUnique({
+            where: { id: newLeaderUserId },
+            select: { id: true, email: true, fullName: true, isActive: true }
+        });
+
+        if (!newLeader) {
+            return res.status(404).json({ success: false, message: "User mới không tồn tại" });
+        }
+
+        if (!newLeader.isActive) {
+            return res.status(400).json({ success: false, message: "User mới đã bị vô hiệu hóa" });
+        }
+
+        // Kiểm tra user mới có phải member của club không
+        const newLeaderMembership = await prisma.clubMembership.findUnique({
+            where: {
+                clubId_userId: {
+                    clubId: clubId,
+                    userId: newLeaderUserId
+                }
+            }
+        });
+
+        if (!newLeaderMembership) {
+            return res.status(400).json({
+                success: false,
+                message: "User mới chưa phải là thành viên của club. Vui lòng thêm thành viên trước."
+            });
+        }
+
+        // Transaction: Update leader và membership roles
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Update club leader
+            const updatedClub = await tx.club.update({
+                where: { id: clubId },
+                data: {
+                    leaderUserId: newLeaderUserId
+                },
+                select: {
+                    id: true,
+                    name: true,
+                    leaderUserId: true,
+                    leader: {
+                        select: { id: true, email: true, fullName: true }
+                    }
+                }
+            });
+
+            // 2. Update membership của leader cũ (A): LEADER → MEMBER
+            // Tìm tất cả memberships của leader cũ trong club này (có thể có nhiều nếu có lỗi trước đó)
+            const oldLeaderMemberships = await tx.clubMembership.findMany({
+                where: {
+                    clubId: clubId,
+                    userId: currentUserId
+                }
+            });
+
+            // Update tất cả memberships của leader cũ thành MEMBER (đảm bảo không còn LEADER nào)
+            if (oldLeaderMemberships.length > 0) {
+                for (const membership of oldLeaderMemberships) {
+                    await tx.clubMembership.update({
+                        where: { id: membership.id },
+                        data: {
+                            role: 'MEMBER',
+                            // Giữ nguyên status và các field khác
+                        }
+                    });
+                }
+                console.log(`Đã update ${oldLeaderMemberships.length} membership(s) của leader cũ (${currentUserId}) thành MEMBER`);
+            } else {
+                // Nếu leader cũ chưa có membership (trường hợp đặc biệt), tạo mới
+                await tx.clubMembership.create({
+                    data: {
+                        clubId: clubId,
+                        userId: currentUserId,
+                        role: 'MEMBER',
+                        status: 'ACTIVE',
+                        joinedAt: new Date(),
+                        activatedAt: new Date()
+                    }
+                });
+                console.log(`Đã tạo membership mới cho leader cũ (${currentUserId}) với role MEMBER`);
+            }
+
+            // 3. Update membership của leader mới (B): MEMBER → LEADER
+            // Đảm bảo chỉ có 1 LEADER trong club
+            const updatedNewLeaderMembership = await tx.clubMembership.update({
+                where: { id: newLeaderMembership.id },
+                data: {
+                    role: 'LEADER',
+                    status: 'ACTIVE',
+                    activatedAt: new Date()
+                }
+            });
+            console.log(`Đã update membership của leader mới (${newLeaderUserId}) thành LEADER`);
+
+            // 4. Đảm bảo không còn LEADER nào khác trong club (safety check)
+            const allLeaderMemberships = await tx.clubMembership.findMany({
+                where: {
+                    clubId: clubId,
+                    role: 'LEADER',
+                    id: { not: newLeaderMembership.id } // Trừ leader mới
+                }
+            });
+
+            // Update tất cả LEADER khác thành MEMBER (nếu có)
+            if (allLeaderMemberships.length > 0) {
+                for (const membership of allLeaderMemberships) {
+                    await tx.clubMembership.update({
+                        where: { id: membership.id },
+                        data: { role: 'MEMBER' }
+                    });
+                }
+                console.log(`Đã update ${allLeaderMemberships.length} LEADER(s) khác thành MEMBER để đảm bảo chỉ có 1 LEADER`);
+            }
+
+            return updatedClub;
+        });
+
+        // Ghi nhật ký cập nhật leader CLB
+        auditLogController.createAuditLog({
+            action: 'UPDATE_CLUB_LEADER',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Chuyển leader CLB ${result.name} sang userId=${newLeaderUserId}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: result.id, oldLeaderId: currentUserId, newLeaderId }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: "Leader đã được cập nhật thành công",
+            data: {
+                club: result,
+                oldLeaderId: currentUserId,
+                newLeaderId: newLeaderUserId
+            }
+        });
+
+    } catch (error) {
+        console.error("Update Club Leader Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+/**
+ * Leader config membership fee cho club
+ */
+exports.configMembershipFee = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const { membershipFeeEnabled, membershipFeeAmount } = req.body;
+        const userId = req.userId;
+
+        // Kiểm tra club có tồn tại không
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: {
+                id: true,
+                name: true,
+                leaderUserId: true,
+                membershipFeeEnabled: true,
+                membershipFeeAmount: true
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club không tồn tại" });
+        }
+
+        // Kiểm tra user có phải leader không
+        if (club.leaderUserId !== userId && req.user.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: "Chỉ club leader mới có quyền cấu hình phí tham gia"
+            });
+        }
+
+        // Validate input
+        if (typeof membershipFeeEnabled !== 'boolean') {
+            return res.status(400).json({
+                success: false,
+                message: "membershipFeeEnabled phải là boolean"
+            });
+        }
+
+        if (membershipFeeEnabled && (!membershipFeeAmount || membershipFeeAmount < 0)) {
+            return res.status(400).json({
+                success: false,
+                message: "Nếu bật tính phí, membershipFeeAmount phải >= 0"
+            });
+        }
+
+        // Update club
+        const updatedClub = await prisma.club.update({
+            where: { id: clubId },
+            data: {
+                membershipFeeEnabled: membershipFeeEnabled,
+                membershipFeeAmount: membershipFeeEnabled ? (membershipFeeAmount || 0) : 0
+            },
+            select: {
+                id: true,
+                name: true,
+                membershipFeeEnabled: true,
+                membershipFeeAmount: true
+            }
+        });
+
+        // Ghi nhật ký cấu hình phí tham gia CLB
+        auditLogController.createAuditLog({
+            action: 'CONFIG_MEMBERSHIP_FEE',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Cấu hình phí tham gia cho CLB ${updatedClub.name}: enabled=${membershipFeeEnabled}, amount=${updatedClub.membershipFeeAmount}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: updatedClub.id }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: "Cấu hình phí tham gia đã được cập nhật",
+            data: updatedClub
+        });
+
+    } catch (error) {
+        console.error("Config Membership Fee Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+/**
+ * Update role của member trong club (Leader only)
+ * Có thể update từ MEMBER lên STAFF, TREASURER, hoặc ngược lại
+ */
+exports.updateMemberRole = async (req, res) => {
+    try {
+        const { clubId, membershipId } = req.params;
+        const { role } = req.body;
+        const userId = req.userId; // Leader ID
+
+        // Validate role
+        const validRoles = ['MEMBER', 'STAFF', 'TREASURER', 'ADMIN', 'LEADER'];
+        if (!role || !validRoles.includes(role.toUpperCase())) {
+            return res.status(400).json({
+                success: false,
+                message: `role phải là một trong các giá trị: ${validRoles.join(', ')}`
+            });
+        }
+
+        const newRole = role.toUpperCase();
+
+        // Kiểm tra club có tồn tại không
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: {
+                id: true,
+                name: true,
+                leaderUserId: true
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club không tồn tại" });
+        }
+
+        // Kiểm tra user có phải leader không
+        if (club.leaderUserId !== userId && req.user.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: "Chỉ club leader mới có quyền cập nhật role của member"
+            });
+        }
+
+        // Kiểm tra membership có tồn tại không
+        const membership = await prisma.clubMembership.findUnique({
+            where: { id: membershipId },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true
+                    }
+                },
+                club: {
+                    select: {
+                        id: true,
+                        name: true,
+                        leaderUserId: true
+                    }
+                }
+            }
+        });
+
+        if (!membership) {
+            return res.status(404).json({ success: false, message: "Membership không tồn tại" });
+        }
+
+        // Kiểm tra membership có thuộc club này không
+        if (membership.clubId !== clubId) {
+            return res.status(400).json({
+                success: false,
+                message: "Membership không thuộc club này"
+            });
+        }
+
+        // Không cho update role của chính leader (leader phải update qua API update leader)
+        if (membership.userId === club.leaderUserId && newRole !== 'LEADER') {
+            return res.status(400).json({
+                success: false,
+                message: "Không thể thay đổi role của leader. Vui lòng sử dụng API update leader để chuyển quyền."
+            });
+        }
+
+        // Không cho set role LEADER qua API này (phải dùng API update leader)
+        if (newRole === 'LEADER') {
+            return res.status(400).json({
+                success: false,
+                message: "Không thể set role LEADER qua API này. Vui lòng sử dụng API update leader."
+            });
+        }
+
+        // Update role
+        const updatedMembership = await prisma.clubMembership.update({
+            where: { id: membershipId },
+            data: {
+                role: newRole
+            },
+            select: {
+                id: true,
+                clubId: true,
+                userId: true,
+                role: true,
+                status: true,
+                joinedAt: true,
+                activatedAt: true,
+                assignedById: true,
+                notes: true,
+                createdAt: true,
+                updatedAt: true,
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true,
+                        studentCode: true
+                    }
+                }
+            }
+        });
+
+        // Ghi nhật ký cập nhật role thành viên
+        auditLogController.createAuditLog({
+            action: 'UPDATE_MEMBER_ROLE',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Cập nhật role của member ${updatedMembership.user?.email || updatedMembership.userId} trong CLB ${club.name} thành ${newRole}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: { clubId: club.id, membershipId }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: `Role của member đã được cập nhật thành ${newRole}`,
+            data: updatedMembership
+        });
+
+    } catch (error) {
+        console.error("Update Member Role Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+/**
+ * Get admin dashboard statistics
+ */
+exports.getAdminStats = async (req, res) => {
+    try {
+        const userId = req.userId;
+
+        // Check if user is admin
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { auth_role: true }
+        });
+
+        if (!user || user.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ admin mới có quyền xem thống kê hệ thống'
+            });
+        }
+
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        // Get total clubs
+        const totalClubs = await prisma.club.count({
+            where: { isActive: true }
+        });
+
+        // Get new events this month (created this month)
+        const newEventsThisMonth = await prisma.event.count({
+            where: {
+                createdAt: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                }
+            }
+        });
+
+        // Get active members (memberships with ACTIVE status)
+        const activeMembers = await prisma.clubMembership.count({
+            where: { status: 'ACTIVE' }
+        });
+
+        // Get new users this month
+        const newUsersThisMonth = await prisma.user.count({
+            where: {
+                createdAt: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                }
+            }
+        });
+
+        // Get events this month (events that start this month)
+        const eventsThisMonth = await prisma.event.count({
+            where: {
+                startTime: {
+                    gte: startOfMonth,
+                    lte: endOfMonth
+                },
+                approvalStatus: 'APPROVED'
+            }
+        });
+
+        // Get upcoming events (events that start in the future)
+        const upcomingEvents = await prisma.event.count({
+            where: {
+                startTime: {
+                    gte: now
+                },
+                approvalStatus: 'APPROVED',
+                isActive: true
+            }
+        });
+
+        // Get growth data for last 6 months
+        const growthData = [];
+        for (let i = 5; i >= 0; i--) {
+            const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
+
+            const [clubsCount, usersCount, eventsCount] = await Promise.all([
+                prisma.club.count({
+                    where: {
+                        isActive: true,
+                        createdAt: {
+                            lte: monthEnd
+                        }
+                    }
+                }),
+                prisma.user.count({
+                    where: {
+                        createdAt: {
+                            lte: monthEnd
+                        }
+                    }
+                }),
+                prisma.event.count({
+                    where: {
+                        createdAt: {
+                            lte: monthEnd
+                        },
+                        approvalStatus: 'APPROVED'
+                    }
+                })
+            ]);
+
+            const monthNames = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12'];
+            growthData.push({
+                name: `${monthNames[monthStart.getMonth()]}/${monthStart.getFullYear().toString().slice(-2)}`,
+                clubs: clubsCount,
+                users: usersCount,
+                events: eventsCount
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Lấy thống kê thành công',
+            data: {
+                totalClubs,
+                newEventsThisMonth,
+                activeMembers,
+                newUsersThisMonth,
+                eventsThisMonth,
+                upcomingEvents,
+                growthData
+            }
+        });
+
+    } catch (error) {
+        console.error('Get Admin Stats Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy thống kê'
+        });
+    }
+};
