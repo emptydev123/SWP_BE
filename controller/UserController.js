@@ -89,16 +89,16 @@ exports.login = async (req, res) => {
             role: user.auth_role // Use auth_role field from schema
         }, secretKey, { expiresIn: '1h' })
 
-            // Log login activity
-            const auditLogController = require('./AuditLogController');
-            auditLogController.createAuditLog({
-                action: 'LOGIN',
-                userId: user.id,
-                userEmail: user.email,
-                details: `Đăng nhập thành công - ${user.fullName || user.email}`,
-                ipAddress: req.ip || req.connection.remoteAddress,
-                userAgent: req.get('user-agent')
-            }).catch(err => console.error('Failed to log login:', err));
+        // Log login activity
+        const auditLogController = require('./AuditLogController');
+        auditLogController.createAuditLog({
+            action: 'LOGIN',
+            userId: user.id,
+            userEmail: user.email,
+            details: `Đăng nhập thành công - ${user.fullName || user.email}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent')
+        }).catch(err => console.error('Failed to log login:', err));
 
         res.status(200).json({
             success: true,
@@ -356,13 +356,22 @@ exports.loginWithGoogle = async (req, res) => {
         }
 
         // Tìm user trong DB theo email
-        const user = await prisma.user.findUnique({ where: { email } });
+        let user = await prisma.user.findUnique({ where: { email } });
 
+        // Nếu chưa có user -> Tự động đăng ký (Auto-register)
         if (!user) {
-            return res.status(404).json({
-                message: "Email chưa được đăng ký trong hệ thống. Vui lòng đăng ký trước.",
-                success: false
+            const { fullName, avatarUrl } = req.body;
+            user = await prisma.user.create({
+                data: {
+                    email,
+                    fullName: fullName || email.split('@')[0],
+                    avatarUrl: avatarUrl || null,
+                    isActive: true,
+                    emailVerified: true, // Google login implies verified email
+                    auth_role: 'USER'
+                }
             });
+            console.log(`[Google Login] Auto-registered new user: ${email}`);
         }
 
         // Kiểm tra user có active không

@@ -587,6 +587,557 @@ exports.createClub = async (req, res) => {
 };
 
 /**
+ * Add single member to club manually (Admin Only)
+ * - Create user if not exist (with default password)
+ * - Create ClubMembership with ACTIVE status (bypass membership fee if enabled)
+ * - Send welcome email (with account/password for new users, welcome only for existing users)
+ * 
+ * Note: Admin has privilege to bypass membership fee payment requirement.
+ * Member added via this API will be directly activated regardless of club's membershipFeeEnabled setting.
+ */
+exports.addMemberToClub = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const { email, fullName, studentCode, phone, role } = req.body;
+
+        // Validate input
+        if (!clubId) {
+            return res.status(400).json({ success: false, message: "Club ID is required" });
+        }
+
+        if (!email || !email.trim()) {
+            return res.status(400).json({ success: false, message: "Email is required" });
+        }
+
+        // Check club exists and get membership fee info
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: {
+                id: true,
+                name: true,
+                membershipFeeEnabled: true,
+                membershipFeeAmount: true
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club not found" });
+        }
+
+        // Determine membership role (default MEMBER)
+        let membershipRole = 'MEMBER';
+        if (role) {
+            const roleUpper = String(role).toUpperCase();
+            if (['MEMBER', 'STAFF', 'TREASURER', 'ADMIN'].includes(roleUpper)) {
+                membershipRole = roleUpper;
+            }
+        }
+
+        const defaultPassword = generateDefaultPassword();
+        const salt = await bcrypt.genSalt(10);
+        const hashPassword = await bcrypt.hash(defaultPassword, salt);
+
+        // Transaction: Create/Update User + Create Membership
+        const result = await prisma.$transaction(
+            async (tx) => {
+                // Check if user already exists
+                let user = await tx.user.findUnique({
+                    where: { email: email.trim() }
+                });
+                const isNewUser = !user;
+
+                if (!user) {
+                    // Check if studentCode already exists
+                    let studentCodeToUse = studentCode ? studentCode.trim() : null;
+                    if (studentCodeToUse) {
+                        const existingUserWithCode = await tx.user.findUnique({
+                            where: { studentCode: studentCodeToUse }
+                        });
+                        if (existingUserWithCode) {
+                            console.warn(`Student code ${studentCodeToUse} already exists, skipping for user ${email}`);
+                            studentCodeToUse = null;
+                        }
+                    }
+
+                    // Create new user
+                    try {
+                        user = await tx.user.create({
+                            data: {
+                                email: email.trim(),
+                                passwordHash: hashPassword,
+                                fullName: fullName ? fullName.trim() : email.split('@')[0],
+                                studentCode: studentCodeToUse,
+                                phone: phone ? phone.trim() : null,
+                                emailVerified: false,
+                                isActive: true,
+                                auth_role: 'USER'
+                            }
+                        });
+                    } catch (createError) {
+                        // Handle unique constraint error
+                        if (createError.code === 'P2002') {
+                            const target = createError.meta?.target || [];
+
+                            if (target.includes('email')) {
+                                // Email already exists, find user
+                                user = await tx.user.findUnique({ where: { email: email.trim() } });
+                                if (user) {
+                                    user = await tx.user.update({
+                                        where: { id: user.id },
+                                        data: { emailVerified: true }
+                                    });
+                                } else {
+                                    throw new Error(`Cannot find user with email ${email} after unique constraint error`);
+                                }
+                            } else if (target.includes('student_code')) {
+                                // StudentCode already exists, retry with studentCode = null
+                                try {
+                                    user = await tx.user.create({
+                                        data: {
+                                            email: email.trim(),
+                                            passwordHash: hashPassword,
+                                            fullName: fullName ? fullName.trim() : email.split('@')[0],
+                                            studentCode: null,
+                                            phone: phone ? phone.trim() : null,
+                                            emailVerified: false,
+                                            isActive: true,
+                                            auth_role: 'USER'
+                                        }
+                                    });
+                                } catch (retryError) {
+                                    if (retryError.code === 'P2002' && retryError.meta?.target?.includes('email')) {
+                                        user = await tx.user.findUnique({ where: { email: email.trim() } });
+                                        if (user) {
+                                            user = await tx.user.update({
+                                                where: { id: user.id },
+                                                data: { emailVerified: true }
+                                            });
+                                        }
+                                    } else {
+                                        throw retryError;
+                                    }
+                                }
+                            } else {
+                                throw createError;
+                            }
+                        } else {
+                            throw createError;
+                        }
+                    }
+                } else {
+                    // Update emailVerified = true if user already exists
+                    user = await tx.user.update({
+                        where: { id: user.id },
+                        data: { emailVerified: true }
+                    });
+                }
+
+                // Check if membership already exists
+                const existingMembership = await tx.clubMembership.findUnique({
+                    where: {
+                        clubId_userId: {
+                            clubId: club.id,
+                            userId: user.id
+                        }
+                    },
+                    select: {
+                        id: true,
+                        status: true,
+                        role: true
+                    }
+                });
+
+                if (existingMembership) {
+                    // Member already exists in club
+                    throw new Error(`Member with email ${email} is already in this club (Status: ${existingMembership.status}, Role: ${existingMembership.role})`);
+                }
+
+                // Create new ClubMembership
+                // Admin privilege: bypass membership fee payment requirement
+                const newMembership = await tx.clubMembership.create({
+                    data: {
+                        clubId: club.id,
+                        userId: user.id,
+                        role: membershipRole,
+                        status: 'ACTIVE', // Directly activate, bypass fee payment
+                        joinedAt: new Date(),
+                        activatedAt: new Date(), // Set activated immediately
+                        assignedById: req.userId // Track who assigned (admin)
+                    }
+                });
+
+                return {
+                    membership: newMembership,
+                    user: {
+                        id: user.id,
+                        email: user.email,
+                        fullName: user.fullName
+                    },
+                    isNewUser,
+                    password: isNewUser ? defaultPassword : null
+                };
+            },
+            {
+                maxWait: 10000,
+                timeout: 30000,
+            });
+
+        // Send welcome email (outside transaction to avoid blocking)
+        emailService.sendWelcomeToClubEmail(
+            email,
+            club.name,
+            result.password,
+            result.isNewUser
+        ).catch(err => {
+            console.error('Error sending email:', err);
+        });
+
+        // Audit log
+        const feeInfo = club.membershipFeeEnabled
+            ? ` (bypassed membership fee: ${club.membershipFeeAmount} VND)`
+            : '';
+        auditLogController.createAuditLog({
+            action: 'ADD_MEMBER_TO_CLUB',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Add member ${email} to club: ${club.name}${feeInfo}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: {
+                clubId: club.id,
+                memberEmail: email,
+                membershipFeeEnabled: club.membershipFeeEnabled,
+                membershipFeeAmount: club.membershipFeeAmount,
+                bypassedFee: club.membershipFeeEnabled
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: "Member added to club successfully",
+            data: {
+                club: {
+                    id: club.id,
+                    name: club.name
+                },
+                member: {
+                    email: result.user.email,
+                    fullName: result.user.fullName,
+                    role: membershipRole,
+                    isNewUser: result.isNewUser
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error("Add Member To Club Error:", error);
+
+        // Check if error is about member already exists
+        if (error.message && error.message.includes('already in this club')) {
+            return res.status(400).json({
+                success: false,
+                message: error.message
+            });
+        }
+
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error",
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+/**
+ * Remove member from club (Admin or Member themselves)
+ * - Check if member has registered for any events in this club
+ * - If registered → cannot remove (return error)
+ * - If not registered → remove membership
+ * 
+ * Note: Only members who haven't registered for any events can leave the club
+ */
+exports.removeMemberFromClub = async (req, res) => {
+    try {
+        const { clubId, membershipId } = req.params;
+        const userId = req.userId;
+        const isAdmin = req.user?.auth_role === 'ADMIN';
+
+        // Validate input
+        if (!clubId) {
+            return res.status(400).json({ success: false, message: "Club ID is required" });
+        }
+
+        if (!membershipId) {
+            return res.status(400).json({ success: false, message: "Membership ID is required" });
+        }
+
+        // Check club exists
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: { id: true, name: true }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club not found" });
+        }
+
+        // Get membership
+        const membership = await prisma.clubMembership.findUnique({
+            where: { id: membershipId },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true
+                    }
+                },
+                club: {
+                    select: {
+                        id: true,
+                        name: true
+                    }
+                }
+            }
+        });
+
+        if (!membership) {
+            return res.status(404).json({ success: false, message: "Membership not found" });
+        }
+
+        // Verify membership belongs to the club
+        if (membership.clubId !== clubId) {
+            return res.status(400).json({
+                success: false,
+                message: "Membership does not belong to this club"
+            });
+        }
+
+        // Check permission: Admin can remove anyone, member can only remove themselves
+        if (!isAdmin && membership.userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: "You can only remove yourself from the club"
+            });
+        }
+
+        // Check if member has registered for any events in this club
+        const eventRegistrations = await prisma.eventRegistration.findMany({
+            where: {
+                clubId: clubId,
+                userId: membership.userId
+            },
+            include: {
+                event: {
+                    select: {
+                        id: true,
+                        title: true,
+                        startTime: true,
+                        endTime: true
+                    }
+                }
+            }
+        });
+
+        if (eventRegistrations.length > 0) {
+            // Member has registered for events, cannot remove
+            const eventTitles = eventRegistrations.map(reg => reg.event.title).join(', ');
+            return res.status(400).json({
+                success: false,
+                message: `Cannot remove member: Member has registered for ${eventRegistrations.length} event(s) in this club`,
+                data: {
+                    registeredEvents: eventRegistrations.map(reg => ({
+                        eventId: reg.event.id,
+                        eventTitle: reg.event.title,
+                        registeredAt: reg.registeredAt,
+                        checkedInAt: reg.checkedInAt
+                    }))
+                }
+            });
+        }
+
+        // Member has no event registrations, safe to remove
+        await prisma.clubMembership.delete({
+            where: { id: membershipId }
+        });
+
+        // Audit log
+        const actionBy = isAdmin ? 'Admin' : 'Member';
+        auditLogController.createAuditLog({
+            action: 'REMOVE_MEMBER_FROM_CLUB',
+            userId: userId,
+            userEmail: req.user?.email || null,
+            details: `${actionBy} removed member ${membership.user.email} from club: ${club.name}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: {
+                clubId: club.id,
+                membershipId: membershipId,
+                removedMemberId: membership.userId,
+                removedMemberEmail: membership.user.email,
+                removedByAdmin: isAdmin
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: "Member removed from club successfully",
+            data: {
+                club: {
+                    id: club.id,
+                    name: club.name
+                },
+                removedMember: {
+                    id: membership.user.id,
+                    email: membership.user.email,
+                    fullName: membership.user.fullName
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error("Remove Member From Club Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error",
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+/**
+ * User leaves club themselves
+ * - Check if user has registered for any events in this club
+ * - If registered → cannot leave (return error)
+ * - If not registered → remove membership
+ * 
+ * Note: Only members who haven't registered for any events can leave the club
+ */
+exports.leaveClub = async (req, res) => {
+    try {
+        const { clubId } = req.params;
+        const userId = req.userId;
+
+        // Validate input
+        if (!clubId) {
+            return res.status(400).json({ success: false, message: "Club ID is required" });
+        }
+
+        // Check club exists
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: { id: true, name: true }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club not found" });
+        }
+
+        // Get user's membership in this club
+        const membership = await prisma.clubMembership.findUnique({
+            where: {
+                clubId_userId: {
+                    clubId: clubId,
+                    userId: userId
+                }
+            },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        fullName: true
+                    }
+                }
+            }
+        });
+
+        if (!membership) {
+            return res.status(404).json({
+                success: false,
+                message: "You are not a member of this club"
+            });
+        }
+
+        // Check if user has registered for any events in this club
+        const eventRegistrations = await prisma.eventRegistration.findMany({
+            where: {
+                clubId: clubId,
+                userId: userId
+            },
+            include: {
+                event: {
+                    select: {
+                        id: true,
+                        title: true,
+                        startTime: true,
+                        endTime: true
+                    }
+                }
+            }
+        });
+
+        if (eventRegistrations.length > 0) {
+            // User has registered for events, cannot leave
+            const eventTitles = eventRegistrations.map(reg => reg.event.title).join(', ');
+            return res.status(400).json({
+                success: false,
+                message: `Cannot leave club: You have registered for ${eventRegistrations.length} event(s) in this club. Please cancel your event registrations first.`,
+                data: {
+                    registeredEvents: eventRegistrations.map(reg => ({
+                        eventId: reg.event.id,
+                        eventTitle: reg.event.title,
+                        registeredAt: reg.registeredAt,
+                        checkedInAt: reg.checkedInAt,
+                        startTime: reg.event.startTime,
+                        endTime: reg.event.endTime
+                    }))
+                }
+            });
+        }
+
+        // User has no event registrations, safe to leave
+        await prisma.clubMembership.delete({
+            where: { id: membership.id }
+        });
+
+        // Audit log
+        auditLogController.createAuditLog({
+            action: 'LEAVE_CLUB',
+            userId: userId,
+            userEmail: req.user?.email || null,
+            details: `User left club: ${club.name}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: {
+                clubId: club.id,
+                membershipId: membership.id,
+                memberEmail: membership.user.email
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: "You have successfully left the club",
+            data: {
+                club: {
+                    id: club.id,
+                    name: club.name
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error("Leave Club Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error",
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+/**
  * Admin update basic club info (name, description, slug, logo)
  */
 exports.updateClubBasicInfo = async (req, res) => {
@@ -669,6 +1220,353 @@ exports.updateClubBasicInfo = async (req, res) => {
         return res.status(500).json({
             success: false,
             message: error.message || "Internal server error"
+        });
+    }
+};
+
+/**
+ * Add members to existing club via Excel import (Admin Only)
+ * - Parse Excel file to get member list
+ * - Create users if not exist (with default password)
+ * - Create ClubMembership for all members with ACTIVE status (bypass membership fee if enabled)
+ * - Send welcome email (with account/password for new users, welcome only for existing users)
+ * 
+ * Note: Admin has privilege to bypass membership fee payment requirement.
+ * Members added via this API will be directly activated regardless of club's membershipFeeEnabled setting.
+ */
+exports.addMembersToClub = async (req, res) => {
+    let excelFilePath = null;
+
+    try {
+        const { clubId } = req.params;
+        const excelFile = req.file;
+
+        // Validate input
+        if (!clubId) {
+            return res.status(400).json({ success: false, message: "Club ID is required" });
+        }
+
+        if (!excelFile) {
+            return res.status(400).json({ success: false, message: "Please upload Excel file" });
+        }
+
+        // Check club exists and get membership fee info (for reference, but admin can bypass)
+        const club = await prisma.club.findUnique({
+            where: { id: clubId },
+            select: {
+                id: true,
+                name: true,
+                membershipFeeEnabled: true,
+                membershipFeeAmount: true
+            }
+        });
+
+        if (!club) {
+            return res.status(404).json({ success: false, message: "Club not found" });
+        }
+
+        excelFilePath = excelFile.path;
+
+        // Parse Excel file
+        const membersData = parseExcelFile(excelFilePath);
+
+        if (membersData.length === 0) {
+            if (fs.existsSync(excelFilePath)) fs.unlinkSync(excelFilePath);
+            return res.status(400).json({ success: false, message: "Excel file has no valid data" });
+        }
+
+        const defaultPassword = generateDefaultPassword();
+        const salt = await bcrypt.genSalt(10);
+        const hashPassword = await bcrypt.hash(defaultPassword, salt);
+
+        // Pre-fetch: Get all existing studentCodes and emails
+        const allStudentCodes = membersData
+            .map(m => m.studentCode)
+            .filter(code => code && code.trim() !== '');
+
+        const allEmails = membersData
+            .map(m => m.email)
+            .filter(email => email && email.trim() !== '');
+
+        const existingStudentCodes = new Set();
+        const existingUsersMap = new Map();
+
+        if (allEmails.length > 0 || allStudentCodes.length > 0) {
+            const existingUsers = await prisma.user.findMany({
+                where: {
+                    OR: [
+                        { email: { in: allEmails } },
+                        { studentCode: { in: allStudentCodes } }
+                    ]
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    studentCode: true
+                }
+            });
+
+            existingUsers.forEach(u => {
+                if (u.email) existingUsersMap.set(u.email, u);
+                if (u.studentCode) existingStudentCodes.add(u.studentCode);
+            });
+        }
+
+        // Transaction: Create/Update Users + Create Memberships + Prepare email queue
+        const result = await prisma.$transaction(
+            async (tx) => {
+                const membershipResults = [];
+                const skippedMembers = []; // Track members that already exist
+                const emailResults = [];
+
+                for (const memberData of membersData) {
+                    if (!memberData.email) continue;
+
+                    // Determine membership role (default MEMBER, can be overridden by Excel role field)
+                    let membershipRole = 'MEMBER';
+                    if (memberData.role) {
+                        const roleUpper = String(memberData.role).toUpperCase();
+                        if (['MEMBER', 'STAFF', 'TREASURER', 'ADMIN'].includes(roleUpper)) {
+                            membershipRole = roleUpper;
+                        }
+                    }
+
+                    // Create or find User
+                    let user = existingUsersMap.get(memberData.email) || null;
+                    const isNewUser = !user;
+
+                    if (!user) {
+                        // Check if studentCode already exists
+                        let studentCodeToUse = memberData.studentCode || null;
+                        if (studentCodeToUse && existingStudentCodes.has(studentCodeToUse)) {
+                            console.warn(`Student code ${studentCodeToUse} already exists, skipping for user ${memberData.email}`);
+                            studentCodeToUse = null;
+                        }
+
+                        // Create new user
+                        try {
+                            user = await tx.user.create({
+                                data: {
+                                    email: memberData.email,
+                                    passwordHash: hashPassword,
+                                    fullName: memberData.fullName || memberData.email.split('@')[0],
+                                    studentCode: studentCodeToUse,
+                                    phone: memberData.phone || null,
+                                    emailVerified: false,
+                                    isActive: true,
+                                    auth_role: 'USER'
+                                }
+                            });
+                            existingUsersMap.set(memberData.email, user);
+                        } catch (createError) {
+                            // Handle unique constraint error
+                            if (createError.code === 'P2002') {
+                                const target = createError.meta?.target || [];
+
+                                if (target.includes('email')) {
+                                    // Email already exists, find user
+                                    console.warn(`Email ${memberData.email} already exists, finding user`);
+                                    user = await tx.user.findUnique({ where: { email: memberData.email } });
+                                    if (user) {
+                                        user = await tx.user.update({
+                                            where: { id: user.id },
+                                            data: { emailVerified: true }
+                                        });
+                                        existingUsersMap.set(memberData.email, user);
+                                    } else {
+                                        throw new Error(`Cannot find user with email ${memberData.email} after unique constraint error`);
+                                    }
+                                } else if (target.includes('student_code')) {
+                                    // StudentCode already exists, retry with studentCode = null
+                                    console.warn(`Unique constraint error for studentCode, retrying with studentCode = null for ${memberData.email}`);
+                                    try {
+                                        user = await tx.user.create({
+                                            data: {
+                                                email: memberData.email,
+                                                passwordHash: hashPassword,
+                                                fullName: memberData.fullName || memberData.email.split('@')[0],
+                                                studentCode: null,
+                                                phone: memberData.phone || null,
+                                                emailVerified: false,
+                                                isActive: true,
+                                                auth_role: 'USER'
+                                            }
+                                        });
+                                        existingUsersMap.set(memberData.email, user);
+                                    } catch (retryError) {
+                                        if (retryError.code === 'P2002' && retryError.meta?.target?.includes('email')) {
+                                            user = await tx.user.findUnique({ where: { email: memberData.email } });
+                                            if (user) {
+                                                user = await tx.user.update({
+                                                    where: { id: user.id },
+                                                    data: { emailVerified: true }
+                                                });
+                                                existingUsersMap.set(memberData.email, user);
+                                            }
+                                        } else {
+                                            throw retryError;
+                                        }
+                                    }
+                                } else {
+                                    throw createError;
+                                }
+                            } else {
+                                throw createError;
+                            }
+                        }
+                    } else {
+                        // Update emailVerified = true if user already exists
+                        user = await tx.user.update({
+                            where: { id: user.id },
+                            data: { emailVerified: true }
+                        });
+                    }
+
+                    // Check if membership already exists
+                    // If member already in club, skip (don't add again)
+                    const existingMembership = await tx.clubMembership.findUnique({
+                        where: {
+                            clubId_userId: {
+                                clubId: club.id,
+                                userId: user.id
+                            }
+                        },
+                        select: {
+                            id: true,
+                            status: true,
+                            role: true
+                        }
+                    });
+
+                    if (existingMembership) {
+                        // Member already exists in club, skip adding
+                        skippedMembers.push({
+                            email: memberData.email,
+                            reason: 'Already a member of this club',
+                            currentStatus: existingMembership.status,
+                            currentRole: existingMembership.role
+                        });
+                        continue; // Skip this member, don't add again
+                    }
+
+                    // Create new ClubMembership
+                    // Admin privilege: bypass membership fee payment requirement
+                    // Members are directly activated (status = ACTIVE) regardless of club's membershipFeeEnabled setting
+                    await tx.clubMembership.create({
+                        data: {
+                            clubId: club.id,
+                            userId: user.id,
+                            role: membershipRole,
+                            status: 'ACTIVE', // Directly activate, bypass fee payment
+                            joinedAt: new Date(),
+                            activatedAt: new Date(), // Set activated immediately
+                            assignedById: req.userId // Track who assigned (admin)
+                        }
+                    });
+
+                    membershipResults.push({
+                        email: memberData.email,
+                        role: membershipRole,
+                        isNewUser
+                    });
+
+                    // Prepare email queue (only for newly added members)
+                    emailResults.push({
+                        email: memberData.email,
+                        isNewUser,
+                        password: isNewUser ? defaultPassword : null
+                    });
+                }
+
+                return {
+                    memberships: membershipResults,
+                    skippedMembers: skippedMembers,
+                    emailQueue: emailResults
+                };
+            },
+            {
+                maxWait: 10000,
+                timeout: 30000,
+            });
+
+        // Send welcome emails (outside transaction to avoid blocking)
+        const emailPromises = result.emailQueue.map(member =>
+            emailService.sendWelcomeToClubEmail(
+                member.email,
+                club.name,
+                member.password,
+                member.isNewUser
+            )
+        );
+
+        // Send emails asynchronously, don't wait for results
+        Promise.all(emailPromises).catch(err => {
+            console.error('Error sending emails:', err);
+        });
+
+        // Delete temporary Excel file
+        if (fs.existsSync(excelFilePath)) {
+            fs.unlinkSync(excelFilePath);
+        }
+
+        // Audit log
+        const feeInfo = club.membershipFeeEnabled
+            ? ` (bypassed membership fee: ${club.membershipFeeAmount} VND)`
+            : '';
+        auditLogController.createAuditLog({
+            action: 'ADD_MEMBERS_TO_CLUB',
+            userId: req.userId,
+            userEmail: req.user?.email || null,
+            details: `Add ${result.memberships.length} members to club: ${club.name}${feeInfo}`,
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            metadata: {
+                clubId: club.id,
+                membersCount: result.memberships.length,
+                membershipFeeEnabled: club.membershipFeeEnabled,
+                membershipFeeAmount: club.membershipFeeAmount,
+                bypassedFee: club.membershipFeeEnabled // Track that fee was bypassed
+            }
+        });
+
+        // Build response message
+        let message = "Members added to club successfully";
+        if (result.skippedMembers.length > 0) {
+            message += `. ${result.skippedMembers.length} member(s) were skipped (already in club)`;
+        }
+
+        res.status(200).json({
+            success: true,
+            message: message,
+            data: {
+                club: {
+                    id: club.id,
+                    name: club.name
+                },
+                membersAdded: result.memberships.length,
+                membersSkipped: result.skippedMembers.length,
+                memberships: result.memberships,
+                skippedMembers: result.skippedMembers.length > 0 ? result.skippedMembers : undefined
+            }
+        });
+
+    } catch (error) {
+        console.error("Add Members To Club Error:", error);
+        console.error("Error Stack:", error.stack);
+
+        // Delete temporary file if error
+        if (excelFilePath && fs.existsSync(excelFilePath)) {
+            try {
+                fs.unlinkSync(excelFilePath);
+            } catch (unlinkError) {
+                console.error("Error deleting temp file:", unlinkError);
+            }
+        }
+
+        res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error",
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
 };
