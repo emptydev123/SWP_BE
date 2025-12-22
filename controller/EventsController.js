@@ -2,6 +2,7 @@ const prisma = require('../prisma/client');
 const payosService = require('../services/payosService');
 const { generateQRCode } = require('../utils/ticketUtils');
 const QRCode = require('qrcode');
+const { formatTransactionWithPayment, getPaymentInfo } = require('../utils/paymentUtils');
 
 /**
  * Tạo Event mới (Club Leader Only)
@@ -3032,6 +3033,223 @@ exports.getClubTransactions = async (req, res) => {
         res.status(500).json({
             success: false,
             message: error.message || 'Lỗi khi lấy danh sách giao dịch'
+        });
+    }
+};
+
+/**
+ * Lấy chi tiết transaction của club (Treasurer/Admin only)
+ * Trả về đầy đủ thông tin: tickets, membership, ledger entries, PayOS data
+ */
+exports.getClubTransactionDetail = async (req, res) => {
+    try {
+        const { clubId, transactionId } = req.params;
+        const userId = req.userId;
+
+        if (!clubId || !transactionId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cần cung cấp clubId và transactionId'
+            });
+        }
+
+        // Kiểm tra quyền: chỉ treasurer hoặc admin
+        const treasurer = await prisma.clubMembership.findFirst({
+            where: {
+                clubId: clubId,
+                userId: userId,
+                status: 'ACTIVE',
+                role: 'TREASURER'
+            }
+        });
+
+        if (!treasurer && req.user?.auth_role !== 'ADMIN') {
+            return res.status(403).json({
+                success: false,
+                message: 'Chỉ thủ quỹ hoặc admin mới có quyền xem chi tiết giao dịch của club'
+            });
+        }
+
+        // Lấy transaction với đầy đủ thông tin
+        const transaction = await prisma.transaction.findUnique({
+            where: { id: transactionId },
+            include: {
+                club: {
+                    select: { id: true, name: true, slug: true }
+                },
+                user: {
+                    select: { id: true, email: true, fullName: true }
+                },
+                referenceMembership: {
+                    include: {
+                        club: {
+                            select: { id: true, name: true }
+                        }
+                    }
+                },
+                referenceTicket: {
+                    include: {
+                        event: {
+                            select: { id: true, title: true }
+                        }
+                    }
+                },
+                ledger: {
+                    orderBy: {
+                        createdAt: 'desc'
+                    }
+                }
+            }
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                message: 'Không tìm thấy transaction'
+            });
+        }
+
+        // Kiểm tra transaction thuộc về club này
+        if (transaction.clubId !== clubId) {
+            return res.status(403).json({
+                success: false,
+                message: 'Transaction không thuộc về club này'
+            });
+        }
+
+        // Parse payosPayload để lấy payosData
+        let payosData = null;
+        if (transaction.payosPayload) {
+            try {
+                payosData = JSON.parse(transaction.payosPayload);
+            } catch (error) {
+                console.error('Error parsing payosPayload:', error);
+            }
+        }
+
+        // Nếu là EVENT_TICKET, lấy tất cả tickets và QR codes
+        let tickets = [];
+        if (transaction.type === 'EVENT_TICKET') {
+            tickets = await prisma.ticket.findMany({
+                where: {
+                    transactionId: transaction.id
+                },
+                include: {
+                    event: {
+                        select: {
+                            id: true,
+                            title: true,
+                            startTime: true,
+                            endTime: true,
+                            location: true,
+                            format: true,
+                            onlineLink: true
+                        }
+                    }
+                },
+                orderBy: {
+                    createdAt: 'asc'
+                }
+            });
+
+            // Nếu transaction đã SUCCESS nhưng tickets chưa có QR code, generate ngay (chỉ cho OFFLINE events)
+            if (transaction.status === 'SUCCESS') {
+                for (const ticket of tickets) {
+                    if (ticket.status !== 'PAID') {
+                        const updateData = {
+                            status: 'PAID',
+                            purchasedAt: ticket.purchasedAt || new Date(),
+                            assignedAt: ticket.assignedAt || new Date()
+                        };
+
+                        // Chỉ generate QR code nếu event format là OFFLINE
+                        if (ticket.event && ticket.event.format === 'OFFLINE' && !ticket.qrCode) {
+                            const qrCode = generateQRCode(ticket.eventId, ticket.id);
+                            updateData.qrCode = qrCode;
+                            ticket.qrCode = qrCode;
+                        }
+
+                        await prisma.ticket.update({
+                            where: { id: ticket.id },
+                            data: updateData
+                        });
+                        ticket.status = 'PAID';
+                    } else if (ticket.event && ticket.event.format === 'OFFLINE' && !ticket.qrCode) {
+                        // Nếu ticket đã PAID nhưng chưa có QR code (cho OFFLINE events)
+                        const qrCode = generateQRCode(ticket.eventId, ticket.id);
+                        await prisma.ticket.update({
+                            where: { id: ticket.id },
+                            data: { qrCode: qrCode }
+                        });
+                        ticket.qrCode = qrCode;
+                    }
+                }
+            }
+        }
+
+        // Format response với payment info từ payosPayload
+        const responseData = await formatTransactionWithPayment(transaction, true); // includeQRCode = true
+
+        // Thêm các thông tin khác
+        responseData.club = transaction.club;
+        responseData.user = transaction.user;
+        responseData.payosData = payosData;
+
+        // Thêm ledger entries
+        responseData.ledger = transaction.ledger || [];
+
+        // Thêm tickets nếu là EVENT_TICKET
+        if (transaction.type === 'EVENT_TICKET') {
+            responseData.tickets = tickets.map(ticket => {
+                const ticketData = {
+                    id: ticket.id,
+                    ticketType: ticket.ticketType,
+                    status: ticket.status,
+                    price: ticket.price,
+                    purchasedAt: ticket.purchasedAt,
+                    assignedAt: ticket.assignedAt,
+                    event: {
+                        ...ticket.event
+                    }
+                };
+
+                // Nếu event là ONLINE, thêm onlineLink từ ticket; nếu OFFLINE, thêm QR code
+                if (ticket.event && ticket.event.format === 'ONLINE') {
+                    ticketData.onlineLink = ticket.onlineLink;
+                } else if (ticket.event && ticket.event.format === 'OFFLINE') {
+                    ticketData.qrCode = ticket.qrCode;
+                }
+
+                return ticketData;
+            });
+        }
+
+        // Thêm membership info nếu là MEMBERSHIP
+        if (transaction.type === 'MEMBERSHIP' && transaction.referenceMembership) {
+            responseData.membership = transaction.referenceMembership;
+        }
+
+        // Đảm bảo có payment info (paymentLink, qrCode, orderCode) nếu transaction còn PENDING
+        if (transaction.status === 'PENDING' && !responseData.paymentLink) {
+            // Nếu chưa có paymentLink, thử lấy từ payosPayload
+            const paymentInfo = await getPaymentInfo(transaction);
+            if (paymentInfo.paymentLink) {
+                responseData.paymentLink = paymentInfo.paymentLink;
+                responseData.qrCode = paymentInfo.qrCode;
+                responseData.orderCode = paymentInfo.orderCode;
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            data: responseData
+        });
+
+    } catch (error) {
+        console.error('Get Club Transaction Detail Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Lỗi khi lấy chi tiết giao dịch'
         });
     }
 };

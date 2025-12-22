@@ -852,6 +852,40 @@ router.get('/:clubId/transactions',
 
 /**
  * @swagger
+ * /api/clubs/{clubId}/transactions/{transactionId}:
+ *   get:
+ *     summary: Get detailed transaction information for a club (Treasurer/Admin only)
+ *     tags: [Clubs]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: clubId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Club ID
+ *       - in: path
+ *         name: transactionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Transaction ID
+ *     responses:
+ *       200:
+ *         description: Transaction details retrieved successfully
+ *       403:
+ *         description: No permission (Treasurer or Admin only)
+ *       404:
+ *         description: Transaction not found
+ */
+router.get('/:clubId/transactions/:transactionId',
+    auth.authMiddleWare,
+    eventsController.getClubTransactionDetail
+);
+
+/**
+ * @swagger
  * /api/clubs/{clubId}/reports/export:
  *   post:
  *     summary: Export financial report for a club (Treasurer/Admin only)
