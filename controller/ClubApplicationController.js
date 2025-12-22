@@ -163,6 +163,15 @@ exports.reviewApplication = async (req, res) => {
 
         // Nếu là reject → chỉ cần update status, gửi email
         if (!isApprove) {
+            // Delete any existing REJECTED application record for this user and club to avoid unique constraint violation
+            await prisma.clubApplication.deleteMany({
+                where: {
+                    clubId: clubId,
+                    userId: application.userId,
+                    status: 'REJECTED'
+                }
+            });
+
             const updatedApplication = await prisma.clubApplication.update({
                 where: { id: applicationId },
                 data: {
@@ -200,7 +209,16 @@ exports.reviewApplication = async (req, res) => {
 
                 // Bước 1: Update application và tạo transaction trong DB (không gọi PayOS trong transaction)
                 const result = await prisma.$transaction(async (tx) => {
-                    // 1. Update application status
+                    // 1. Delete any existing APPROVED application record for this user and club to avoid unique constraint violation
+                    await tx.clubApplication.deleteMany({
+                        where: {
+                            clubId: clubId,
+                            userId: application.userId,
+                            status: 'APPROVED'
+                        }
+                    });
+
+                    // 2. Update application status
                     const updatedApplication = await tx.clubApplication.update({
                         where: { id: applicationId },
                         data: {
@@ -336,7 +354,16 @@ exports.reviewApplication = async (req, res) => {
 
         // Club free - Duyệt và add membership ngay
         const result = await prisma.$transaction(async (tx) => {
-            // 1. Update application status
+            // 1. Delete any existing APPROVED application record for this user and club to avoid unique constraint violation
+            await tx.clubApplication.deleteMany({
+                where: {
+                    clubId: clubId,
+                    userId: application.userId,
+                    status: 'APPROVED'
+                }
+            });
+
+            // 2. Update application status
             const updatedApplication = await tx.clubApplication.update({
                 where: { id: applicationId },
                 data: {
